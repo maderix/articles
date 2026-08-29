@@ -349,27 +349,27 @@
       <line x1="740" y1="404" x2="740" y2="420" stroke="var(--diagram-stroke)" marker-end="url(#pa)" class="dma"/>
 
       <!-- SRAM -->
-      <rect x="60" y="422" width="570" height="112" rx="3" fill="var(--grp-a)" fill-opacity=".08" stroke="var(--grp-a)" stroke-width="1.2"/>
-      <text x="345" y="438" text-anchor="middle" font-size="12" font-weight="500">SRAM scratchpad · 64 banks · 16 B interleave · compiler-managed, no eviction</text>
+      <rect x="60" y="422" width="570" height="104" rx="3" fill="var(--grp-a)" fill-opacity=".08" stroke="var(--grp-a)" stroke-width="1.2"/>
+      <text x="345" y="438" text-anchor="middle" font-size="12" font-weight="500">SRAM scratchpad · 64 banks · 16 B interleave · no eviction</text>
       <g id="sram" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"></g>
       <g id="sramlit"></g>
 
       <!-- weight store -->
-      <rect x="650" y="422" width="190" height="112" rx="3" fill="var(--grp-a)" fill-opacity=".08" stroke="var(--grp-a)" stroke-width="1.2"/>
+      <rect x="650" y="422" width="190" height="104" rx="3" fill="var(--grp-a)" fill-opacity=".08" stroke="var(--grp-a)" stroke-width="1.2"/>
       <text x="745" y="438" text-anchor="middle" font-size="12" font-weight="500">weight store</text>
-      <text x="745" y="450" text-anchor="middle" font-size="9" fill="var(--fg-secondary)">64 KiB resident · 16 MiB streamed</text>
+      <text x="745" y="450" text-anchor="middle" font-size="8.5" fill="var(--fg-secondary)">64 KiB resident · 16 MiB streamed</text>
       <g id="wstore" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"></g>
       <g id="wstorelit"></g>
 
       <!-- SRAM -> compute -->
-      <line x1="345" y1="534" x2="345" y2="552" stroke="var(--diagram-stroke)" marker-end="url(#pa)"/>
-      <line x1="745" y1="534" x2="745" y2="552" stroke="var(--diagram-stroke)" marker-end="url(#pa)"/>
+      <line x1="345" y1="526" x2="345" y2="550" stroke="var(--diagram-stroke)" marker-end="url(#pa)"/>
+      <line x1="745" y1="526" x2="745" y2="550" stroke="var(--diagram-stroke)" marker-end="url(#pa)"/>
 
       <!-- compute -->
-      <rect x="60" y="554" width="570" height="62" rx="3" fill="var(--grp-b)" fill-opacity=".08" stroke="var(--grp-b)" stroke-width="1.2"/>
-      <text x="345" y="570" text-anchor="middle" font-size="12" font-weight="500">MAC array · 8 compute sets × 8 accumulators · fp16 products, wide accumulate</text>
+      <rect x="60" y="552" width="570" height="64" rx="3" fill="var(--grp-b)" fill-opacity=".08" stroke="var(--grp-b)" stroke-width="1.2"/>
+      <text x="345" y="570" text-anchor="middle" font-size="12" font-weight="500">MAC array · 8 compute sets × 8 accumulators · fp16</text>
       <g id="cs"></g>
-      <rect x="650" y="554" width="190" height="62" rx="3" fill="var(--grp-b)" fill-opacity=".08" stroke="var(--grp-b)" stroke-width="1.2"/>
+      <rect x="650" y="552" width="190" height="64" rx="3" fill="var(--grp-b)" fill-opacity=".08" stroke="var(--grp-b)" stroke-width="1.2"/>
       <text x="745" y="570" text-anchor="middle" font-size="12" font-weight="500">planar engine</text>
       <text x="745" y="584" text-anchor="middle" font-size="9.5" fill="var(--fg-secondary)">ALU · 33-pt LUT · reduce</text>
       <g data-from="8"><rect x="672" y="592" width="146" height="14" rx="2" class="lit2"/><text x="745" y="602" text-anchor="middle" font-size="9.5">relu via ALU (no LUT)</text></g>
@@ -873,27 +873,27 @@
   // SRAM: 4 rows x 16 banks
   var sr = document.getElementById('sram'), sl = document.getElementById('sramlit');
   for (var r2 = 0; r2 < 4; r2++) for (var c2 = 0; c2 < 16; c2++) {
-    sr.appendChild(el('rect', { x: 72 + c2 * 34.5, y: 446 + r2 * 18, width: 30, height: 14, rx: 1.5 }));
-    if (c2 === 0) sr.appendChild(el('text', { x: 66, y: 457 + r2 * 18, 'font-size': 8, 'text-anchor': 'end', fill: 'var(--fg-muted)' })).textContent = '';
+    sr.appendChild(el('rect', { x: 72 + c2 * 34.5, y: 444 + r2 * 16, width: 30, height: 12, rx: 1.5 }));
+    if (c2 === 0) sr.appendChild(el('text', { x: 66, y: 454 + r2 * 16, 'font-size': 8, 'text-anchor': 'end', fill: 'var(--fg-muted)' })).textContent = '';
   }
-  var lab = el('text', { x: 345, y: 528, 'text-anchor': 'middle', 'font-size': 10, fill: 'var(--fg-muted)' });
+  var lab = el('text', { x: 345, y: 519, 'text-anchor': 'middle', 'font-size': 9.5, fill: 'var(--fg-muted)' });
   lab.textContent = 'bank 0 … bank 63 · tile 0 resident, tile 1 streaming in'; sr.parentNode.insertBefore(lab, sl);
   // lit pattern: tile 0 occupies rows 0-1 (resident), tile 1 rows 2-3 partial (streaming)
   for (var r3 = 0; r3 < 4; r3++) for (var c3 = 0; c3 < 16; c3++) {
     var strong = r3 < 2, partial = r3 >= 2 && c3 < 9;
     if (!strong && !partial) continue;
-    var q = el('rect', { x: 72 + c3 * 34.5, y: 446 + r3 * 18, width: 30, height: 14, rx: 1.5, 'class': strong ? 'lit' : 'lit2' });
+    var q = el('rect', { x: 72 + c3 * 34.5, y: 444 + r3 * 16, width: 30, height: 12, rx: 1.5, 'class': strong ? 'lit' : 'lit2' });
     q.setAttribute('data-from', strong ? '7' : '8'); sl.appendChild(q);
   }
 
   // weight store: 4x4 chunks
   var ws = document.getElementById('wstore'), wl = document.getElementById('wstorelit');
   for (var r4 = 0; r4 < 4; r4++) for (var c4 = 0; c4 < 4; c4++) {
-    ws.appendChild(el('rect', { x: 668 + c4 * 40, y: 456 + r4 * 16, width: 34, height: 12, rx: 1.5 }));
-    var w = el('rect', { x: 668 + c4 * 40, y: 456 + r4 * 16, width: 34, height: 12, rx: 1.5, 'class': 'lit2' });
+    ws.appendChild(el('rect', { x: 668 + c4 * 40, y: 456 + r4 * 14, width: 34, height: 10, rx: 1.5 }));
+    var w = el('rect', { x: 668 + c4 * 40, y: 456 + r4 * 14, width: 34, height: 10, rx: 1.5, 'class': 'lit2' });
     w.setAttribute('data-from', '7'); wl.appendChild(w);
   }
-  var wlab = el('text', { x: 745, y: 528, 'text-anchor': 'middle', 'font-size': 10, fill: 'var(--fg-muted)' });
+  var wlab = el('text', { x: 745, y: 519, 'text-anchor': 'middle', 'font-size': 9.5, fill: 'var(--fg-muted)' });
   wlab.textContent = 'STEP = weight_bytes / 16'; ws.parentNode.insertBefore(wlab, wl);
 
   // compute sets
