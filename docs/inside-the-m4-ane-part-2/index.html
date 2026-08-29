@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Measuring the real performance of Apple&#x27;s neural accelerator">
+<title>Inside the M4 ANE, Part 2</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;0,8..60,700;1,8..60,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+
+<style>
+  :root {
+    --bg: #fafaf8; --fg: #1a1a18; --fg-secondary: #5c5c58; --fg-muted: #8a8a84;
+    --accent: #c45230; --surface: #f0efec; --border: #d8d7d3;
+    --code-bg: #eeedea; --code-fg: #2d2d2a; --table-stripe: #f5f4f1;
+    --diagram-bg: #f5f4f1; --diagram-stroke: #3a3a36; --diagram-fill: #e8e7e3;
+    --diagram-accent: #c45230;
+    --grp-a: #4a7a6a; --grp-b: #5a6a9a; --grp-c: #8a6a4a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #1a1a18; --fg: #e4e4df; --fg-secondary: #a8a8a2; --fg-muted: #6e6e68;
+      --accent: #e07050; --surface: #242422; --border: #3a3a36;
+      --code-bg: #2a2a26; --code-fg: #d4d4cf; --table-stripe: #222220;
+      --diagram-bg: #242422; --diagram-stroke: #b0b0a8; --diagram-fill: #2e2e2a;
+      --diagram-accent: #e07050;
+      --grp-a: #6aaa8a; --grp-b: #7a8aba; --grp-c: #ba9a6a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #1a1a18; --fg: #e4e4df; --fg-secondary: #a8a8a2; --fg-muted: #6e6e68;
+    --accent: #e07050; --surface: #242422; --border: #3a3a36;
+    --code-bg: #2a2a26; --code-fg: #d4d4cf; --table-stripe: #222220;
+    --diagram-bg: #242422; --diagram-stroke: #b0b0a8; --diagram-fill: #2e2e2a;
+    --diagram-accent: #e07050;
+    --grp-a: #6aaa8a; --grp-b: #7a8aba; --grp-c: #ba9a6a;
+  }
+  body { background: var(--bg); color: var(--fg); font-family: 'Source Serif 4', Georgia, 'Times New Roman', serif; font-size: clamp(17px, 0.5vw + 12px, 19px); line-height: 1.6; margin: 0; padding: 0; }
+  .article { width: calc(100% - 48px); max-width: 1100px; margin: 0 auto; padding: 32px 0 64px; }
+  .article > figure { width: 100%; max-width: 860px; margin-left: auto; margin-right: auto; }
+  .article > .pipe { width: 100%; max-width: 1000px; margin-left: auto; margin-right: auto; }
+  .article > .table-wrap, .article > pre { width: 100%; } }
+  .series-label { font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); margin-bottom: 12px; }
+  h1 { font-family: 'Source Serif 4', Georgia, serif; font-size: 36px; font-weight: 700; line-height: 1.2; color: var(--fg); margin: 0 0 8px; text-wrap: balance; }
+  .subtitle { font-size: 19px; font-style: italic; color: var(--fg-secondary); margin-bottom: 20px; line-height: 1.5; }
+  .byline { font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: var(--fg-muted); margin-bottom: 28px; padding-bottom: 16px; border-bottom: 1px solid var(--border); }
+  h2 { font-family: 'Source Serif 4', Georgia, serif; font-size: 24px; font-weight: 600; margin: 36px 0 12px; color: var(--fg); text-wrap: balance; }
+  h3 { font-family: 'Source Serif 4', Georgia, serif; font-size: 20px; font-weight: 600; margin: 24px 0 10px; color: var(--fg); }
+  p { margin: 0 0 14px; }
+  a { color: var(--accent); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  code { font-family: 'IBM Plex Mono', monospace; font-size: 0.85em; background: var(--code-bg); color: var(--code-fg); padding: 2px 5px; border-radius: 3px; }
+  pre { background: var(--code-bg); color: var(--code-fg); font-family: 'IBM Plex Mono', monospace; font-size: 13.5px; line-height: 1.55; padding: 14px 18px; border-radius: 4px; overflow-x: auto; margin: 0 0 18px; border: 1px solid var(--border); }
+  pre code { background: none; padding: 0; font-size: inherit; }
+  table { width: 100%; border-collapse: collapse; font-size: 15px; margin: 0 0 24px; font-variant-numeric: tabular-nums; }
+  th { font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; text-align: left; padding: 8px 12px; border-bottom: 2px solid var(--border); color: var(--fg-secondary); }
+  td { padding: 7px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr:nth-child(even) td { background: var(--table-stripe); }
+  .table-wrap { overflow-x: auto; margin-bottom: 18px; }
+  figure { margin-top: 20px; margin-bottom: 24px; }
+  figcaption { font-size: 14px; color: var(--fg-muted); margin-top: 10px; font-style: italic; line-height: 1.5; }
+  figure svg { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+  hr { border: none; border-top: 1px solid var(--border); margin: 32px 0; }
+  strong { font-weight: 600; }
+  .correction { background: var(--surface); border-left: 3px solid var(--accent); padding: 12px 16px; margin: 16px 0; border-radius: 0 4px 4px 0; font-size: 16px; }
+  .correction p:last-child { margin-bottom: 0; }
+  .ref-list { font-size: 15px; line-height: 1.6; }
+  .ref-list li { margin-bottom: 8px; }
+  @media (max-width: 600px) { h1 { font-size: 28px; } .article { width: calc(100% - 28px); padding: 24px 0 48px; } pre { font-size: 12px; padding: 14px 16px; } }
+
+  /* Interactive pipeline diagram */
+  /* The diagram is 900 units wide; let it break out of the 680px text column so
+     text renders near 1:1 on desktop. On narrow screens it shrinks to the viewport. */
+  .pipe { margin-top: 20px; margin-bottom: 28px; }
+  .pipe-ctl { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-family: 'IBM Plex Mono', monospace; font-size: 12px; }
+  .pipe-ctl button {
+    font-family: inherit; font-size: 12px; padding: 5px 12px; border-radius: 3px; cursor: pointer;
+    background: var(--surface); color: var(--fg); border: 1px solid var(--border);
+  }
+  .pipe-ctl button:hover, .pipe-ctl button:focus-visible { border-color: var(--accent); outline: none; }
+  .pipe-ctl button[disabled] { opacity: .4; cursor: default; }
+  .pipe-ctl .pipe-pos { margin-left: auto; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+  .pipe-ctl .dots { display: flex; gap: 4px; }
+  .pipe-ctl .dots i { width: 8px; height: 8px; border-radius: 50%; background: var(--border); display: block; cursor: pointer; }
+  .pipe-ctl .dots i.on { background: var(--accent); }
+  .pipe-ctl .dots i.done { background: var(--fg-muted); }
+  .pipe svg { width: 100%; height: auto; display: block; background: var(--diagram-bg); border-radius: 4px; border: 1px solid var(--border); }
+  .pipe svg text { font-family: 'IBM Plex Mono', monospace; fill: currentColor; }
+  .pipe .st { opacity: .32; transition: opacity .25s; }
+  .pipe .st.done { opacity: .72; }
+  .pipe .st.on { opacity: 1; }
+  .pipe .st.on .frame { stroke: var(--accent); stroke-width: 1.5; }
+  .pipe [data-from], .pipe [data-until] { transition: opacity .2s; }
+  .pipe .lit { fill: var(--accent); fill-opacity: .75; }
+  .pipe .lit2 { fill: var(--accent); fill-opacity: .35; }
+  .pipe .flow { stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 5 4; animation: pipeflow 1s linear infinite; }
+  @keyframes pipeflow { to { stroke-dashoffset: -18; } }
+  @media (prefers-reduced-motion: reduce) { .pipe .flow { animation: none; } .pipe .st { transition: none; } }
+  .pipe-cap {
+    margin-top: 10px; padding: 12px 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 4px;
+    font-size: 15px; line-height: 1.55; min-height: 74px;
+  }
+  .pipe-cap .cap-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; font-family: 'IBM Plex Mono', monospace; }
+  .pipe-cap .cap-title { font-size: 13px; font-weight: 500; color: var(--accent); }
+  .pipe-cap .ev { font-size: 9px; padding: 2px 6px; border-radius: 2px; letter-spacing: .04em; border: 1px solid; }
+  .pipe-cap .ev.m4 { color: var(--grp-a); border-color: var(--grp-a); }
+  .pipe-cap .ev.m1 { color: var(--grp-c); border-color: var(--grp-c); }
+  .pipe-cap p { margin: 0; }
+  .pipe-cap code { font-size: .82em; }
+
+  /* chart tokens + hover tooltip */
+  :root { --chart-a: #c45230; --chart-b: #3a6fc0; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --chart-a: #e07050; --chart-b: #5f88e0; } }
+  :root[data-theme="dark"] { --chart-a: #e07050; --chart-b: #5f88e0; }
+  figure svg text { font-family: 'IBM Plex Mono', monospace; }
+  .fig-tip { position: fixed; pointer-events: none; z-index: 10; padding: 6px 9px; font: 12px/1.4 'IBM Plex Mono', monospace;
+    background: var(--fg); color: var(--bg); border-radius: 3px; opacity: 0; transition: opacity .12s; white-space: nowrap; }
+  .fig-tip.show { opacity: 1; }
+  [data-tip] { cursor: default; }
+  .bar { transition: fill-opacity .15s; }
+  .bar:hover { fill-opacity: 1; }
+
+  /* ---- readability pass: section rhythm, hierarchy, key findings ---- */
+  .article { counter-reset: sec; }
+  h2 { position: relative; padding-top: 18px; margin-top: 44px; border-top: 2px solid var(--accent); font-size: 26px; }
+  h2::before { counter-increment: sec; content: "§ " counter(sec, decimal-leading-zero); display: block;
+    font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 500; letter-spacing: .12em; color: var(--accent); margin-bottom: 6px; }
+  h2.plain { counter-increment: none; } h2.plain::before { content: none; }
+  h3 { border-left: 3px solid var(--accent); padding-left: 10px; margin-top: 28px; color: var(--fg); }
+  h2 + p { font-size: 1.06em; color: var(--fg); }
+  p { color: color-mix(in srgb, var(--fg) 88%, var(--bg)); }
+  strong { color: var(--fg); }
+  code { color: color-mix(in srgb, var(--accent) 72%, var(--fg)); }
+  pre code { color: var(--code-fg); }
+  th { background: var(--surface); }
+  .key { display: grid; grid-template-columns: auto 1fr; gap: 12px; align-items: baseline;
+    background: color-mix(in srgb, var(--accent) 9%, var(--bg)); border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--bg));
+    border-radius: 4px; padding: 11px 14px; margin: 18px 0 22px; font-size: 16px; color: var(--fg); }
+  .key b { font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; letter-spacing: .12em; color: var(--accent); font-weight: 500; }
+  figcaption { color: color-mix(in srgb, var(--fg) 62%, var(--bg)); }
+  .correction { border-color: var(--grp-b); background: color-mix(in srgb, var(--grp-b) 8%, var(--bg)); }
+  .correction strong { color: var(--grp-b); }
+</style>
+<style>
+  .body-html img{max-width:100%;height:auto;display:block;margin:0 auto;border-radius:4px}
+  .body-html figure{margin:20px auto 24px;max-width:860px}
+  .body-html figcaption,.body-html .image-caption{font-size:14px;color:color-mix(in srgb,var(--fg) 62%,var(--bg));font-style:italic;text-align:center;margin-top:8px}
+  .body-html blockquote{margin:16px 0;padding:8px 18px;border-left:3px solid var(--accent);color:color-mix(in srgb,var(--fg) 80%,var(--bg))}
+  .body-html h4{font-family:'Source Serif 4',Georgia,serif;font-size:18px;margin:20px 0 8px}
+  .body-html pre code{white-space:pre}
+  .series-nav{display:flex;justify-content:space-between;gap:16px;margin-top:40px;padding-top:18px;border-top:1px solid var(--border);font-family:'IBM Plex Mono',monospace;font-size:13px}
+  .origin{font-size:14px;color:color-mix(in srgb,var(--fg) 62%,var(--bg));margin:-16px 0 24px}
+  body{margin:0}
+</style>
+</head>
+<body>
+<article class="article">
+<div class="series-label">Inside the M4 Apple Neural Engine · Part 2</div>
+<h1>ANE Benchmarks</h1>
+<p class="subtitle">Measuring the real performance of Apple&#x27;s neural accelerator</p>
+<div class="byline">manjeet singh · 2026-02-28</div>
+<p class="origin">Originally published on <a href="https://maderix.substack.com/p/inside-the-m4-apple-neural-engine-615">Substack</a>. Mirrored here with the subscription widgets removed; text and figures unchanged.</p>
+<div class="body-html">
+<div class="captioned-image-container"><figure><div class="image2-inset"><img alt="" loading="lazy" src="img/01.jpg"/></div></figure></div><p>Apple says the M4 Neural Engine delivers 38 TOPS. Let’s measure it.</p><p>In <a href="../inside-the-m4-ane-part-1/">Part 1</a>, we reverse-engineered the ANE software stack and gained direct access via <code>_ANEClient</code>, bypassing CoreML entirely. Now we can benchmark without CoreML’s overhead distorting the numbers.</p><p>What we found is surprising. The “38 TOPS” number is technically not wrong, but it’s deeply misleading. And there are patterns for extracting maximum throughput that Apple has never documented.</p><h2>Test Setup</h2><p><strong>Hardware:</strong> M4 Mac Mini (10-core CPU, 16-core ANE)<br/><strong>Software:</strong> macOS 15.x, direct <code>_ANEClient</code> API (no CoreML)<br/><strong>Timing:</strong> <code>mach_absolute_time()</code>, 100+ iterations, median reported<br/><strong>Precision:</strong> FP16 compute (ANE native), FP32 I/O</p><h2>Matmul Scaling: The Basics</h2><p>Let’s start with the simplest possible benchmark: square matrix multiplication at increasing sizes.</p><div class="captioned-image-container"><figure><div class="image2-inset"><img alt="" loading="lazy" src="img/02.png"/></div></figure></div><div class="captioned-image-container"><figure><div class="image2-inset"><img alt="" loading="lazy" src="img/03.png"/></div></figure></div><p>Two things jump out:</p><ol><li><p><strong>256×256 is dispatch-limited</strong>: At 0.101ms, most of the time is XPC + IOKit overhead (~0.095ms). The actual compute is only ~0.006ms.</p></li><li><p><strong>Performance drops at 4096</strong>: From 5.7 TFLOPS at 2048 to 4.0 TFLOPS at 4096. Something is overflowing.</p></li></ol><h2>The SRAM Cliff</h2><p>That 2048→4096 performance drop is the SRAM cliff. The working set for a matmul is 3 matrices (A, B, C). In FP16:</p><div class="captioned-image-container"><figure><div class="image2-inset"><img alt="" loading="lazy" src="img/04.png"/></div></figure></div><p>At 2048×2048, the 24 MB working set fits in SRAM and we get peak single-op throughput (5.7 TFLOPS). At 4096×4096, the 96 MB working set is ~3× larger than SRAM, forcing spills to DRAM and dropping throughput by 30%.</p><p>The cliff between 24 MB (fast) and 96 MB (slow) places the ANE’s on-chip SRAM at roughly <strong>~32 MB</strong>. The transition isn’t a hard wall — performance degrades gradually, suggesting a cache-like hierarchy rather than a hard scratchpad.</p><div class="captioned-image-container"><figure><div class="image2-inset"><img alt="" loading="lazy" src="img/05.png"/></div></figure></div><p></p><h2>Convolution &gt; Matrix Multiply</h2><p>Here’s something that isn’t obvious from Apple’s documentation: <strong>the ANE is fundamentally a convolution engine</strong>. Expressing the same computation as a 1×1 convolution instead of a matrix multiply gives dramatically better throughput.</p><p>A matrix multiply <code>C[M,N] = A[M,K] @ B[K,N]</code> can be expressed as a 1×1 convolution by reshaping:</p><ul><li><p>Input: <code>(1, K, 1, M)</code></p></li><li><p>Weight: <code>(N, K, 1, 1)</code></p></li><li><p>Output: <code>(1, N, 1, M)</code></p></li></ul><p>Same FLOPs, same result, but the ANE’s conv datapath handles it much more efficiently.</p><h2>Deep Graphs Fill the Pipeline</h2><p>A single matmul operation only uses ~30% of the ANE’s peak capacity. The hardware is designed for <em>graphs</em> — chains of operations that keep all 16 cores busy. The more operations you chain, the closer you get to theoretical peak:</p><div class="captioned-image-container"><figure><div class="image2-inset"><img alt="" loading="lazy" src="img/06.png"/></div></figure></div><div class="captioned-image-container"><figure><div class="image2-inset"><img alt="" loading="lazy" src="img/07.png"/></div></figure></div><p></p><blockquote><p><strong>Rules for maximizing ANE throughput:</strong></p><p><strong>Deep graphs, not wide.</strong> Chain 16-64 ops in one MIL program. Single ops waste 70% of capacity.</p><p><strong>Conv over matmul.</strong> 1×1 convolutions use the fast datapath. Matmul is 3× slower.</p><p><strong>Stay under 32 MB.</strong> Keep per-tensor footprint in SRAM. Spilling to DRAM kills throughput.</p><p><strong>Avoid dispatch-limited ops.</strong> Anything under ~1ms is dominated by the 0.095ms dispatch overhead.</p></blockquote><h2>CoreML vs _ANEClient: The Overhead Tax</h2><p>How much performance does CoreML leave on the table? We measured the same operations through both paths:</p><div class="captioned-image-container"><figure><div class="image2-inset"><img alt="" loading="lazy" src="img/08.png"/></div></figure></div><div class="captioned-image-container"><figure><div class="image2-inset"><img alt="" loading="lazy" src="img/09.png"/></div></figure></div><p></p><p>For small operations, <strong>CoreML adds 2-4× overhead</strong>. The gap narrows at high-throughput configurations because the ANE compute time dominates. But for latency-sensitive workloads (LLM token decoding, real-time inference), the CoreML tax is severe.</p><h2>INT8 = FP16: The “38 TOPS” Reality</h2><p>Apple claims “38 TOPS” for the M4 Neural Engine. Here’s what that actually means.</p><p>We measured identical operations in both FP16 and INT8:</p><div class="captioned-image-container"><figure><div class="image2-inset"><img alt="" loading="lazy" src="img/10.png"/></div></figure></div><p></p><blockquote><p><strong>Finding:</strong> There is no 2× INT8 speedup. INT8 and FP16 deliver nearly identical throughput. The ANE <strong>dequantizes INT8 weights to FP16 before compute</strong>. </p><p>INT8 saves only memory bandwidth (smaller weights to load from DRAM), not compute cycles.</p></blockquote><p>Apple’s “38 TOPS INT8” is computed as <code>19 TFLOPS FP16 × 2</code>, following the industry convention of counting INT8 operations as 2× the FP16 rate. But the hardware doesn’t actually execute INT8 operations twice as fast. </p><p><strong>The true peak is 19 TFLOPS FP16, and that’s what you get regardless of quantization.</strong></p><p>This is 100% of the theoretical peak we calculated from the hardware configuration (16 cores × ~1.2 TFLOPS/core). The 94% utilization at 32+ layer depth means we’re essentially measuring the hardware’s raw capability.</p><h2>Power Efficiency: The ANE’s Secret Weapon</h2><p>If throughput were the only metric, a GPU would always win. But the ANE’s real advantage is efficiency.</p><div class="captioned-image-container"><figure><div class="image2-inset"><img alt="" loading="lazy" src="img/11.png"/></div></figure></div><div class="captioned-image-container"><figure><div class="image2-inset"><img alt="" loading="lazy" src="img/12.png"/></div></figure></div><p></p><p>Zero. Milliwatts. At idle. The ANE has <strong>hard power gating</strong> — it doesn’t just clock-gate, it completely powers down when not in use. No leakage, no standby drain.</p><p>At peak load, it delivers <strong>6.6 TFLOPS/W</strong>. For context:</p><p>Compute Efficiency (TFLOPS/W)M4 ANE6.6M4 GPU~1.0A100 GPU~0.08H100 GPU~0.13</p><p>The ANE is roughly <strong>80× more efficient per FLOP than an A100</strong>. Of course, the A100 has 50× more total throughput. But for on-device inference where you’re running off a battery, the ANE is extraordinary.</p><h2>ANE vs SME: When to Use Which</h2><p>The M4 also has Apple’s SME (Scalable Matrix Extension) on the CPU cores. Here’s how they compare:</p><div class="captioned-image-container"><figure><div class="image2-inset"><img alt="" loading="lazy" src="img/13.png"/></div></figure></div><p><strong>Use ANE for:</strong> Large batch inference, deep graphs with 16+ layers, energy-constrained scenarios, sustained throughput</p><p><strong>Use SME for:</strong> Single-token decode (zero dispatch overhead), custom operations ANE doesn’t support, small matrices, anything requiring FP32+ precision</p><p>The ideal LLM inference strategy on M4 is <strong>hybrid</strong>: prefill (large batch, high throughput) on ANE, decode (single token, latency-sensitive) on SME.</p><h2>Reproducibility</h2><p>All benchmark code is available at <a href="https://github.com/maderix/ANE">github.com/maderix/ANE</a> in the <code>ane/</code> directory. Key files:</p><ul><li><p>ane/inmem_bench.m — In-memory ANE benchmarks</p></li><li><p>ane/inmem_peak.m — Peak throughput measurement (deep conv graphs)</p></li><li><p>ane/sram_probe.m — SRAM size probing</p></li><li><p>ane/api_exploration.m — _ANEClient API discovery</p></li></ul><p>Compile with: <code>clang -framework Foundation -framework IOKit -framework CoreML -o bench ane/inmem_bench.m</code></p><p>Requires macOS 15+ on Apple Silicon. The private framework symbols are resolved at runtime via <code>dlopen</code>/<code>objc_getClass</code>.</p><h2>What’s Next</h2><p>We now know the ANE’s true capabilities: 19 TFLOPS FP16 at 2.8W, with the right graph structure. In <strong>Part 3</strong>, we’ll attempt something Apple explicitly doesn’t support: <em>training</em> a neural network on the Neural Engine. We’ll crack the weight blob format, work around the 119-compile limit, and get a model learning on hardware designed only for inference.</p><hr/><blockquote><p><em>All measurements on M4 Mac Mini, macOS 15.x. Median of 100+ iterations reported. Code at <a href="https://github.com/maderix/ANE">github.com/maderix/ANE</a>.</em></p></blockquote>
+</div>
+<nav class="series-nav"><a href="../inside-the-m4-ane-part-1/">← Part 1</a><a href="../">All articles</a><a href="../inside-the-m4-ane-part-3/">Part 3 →</a></nav>
+</article>
+<button id="theme-toggle" type="button" aria-label="Toggle dark mode" style="position:fixed;top:14px;right:14px;z-index:20;font:12px 'IBM Plex Mono',monospace;padding:6px 10px;border-radius:3px;border:1px solid var(--border);background:var(--surface);color:var(--fg);cursor:pointer">dark</button>
+<script>
+(function(){var r=document.documentElement,b=document.getElementById('theme-toggle');
+function set(t){r.setAttribute('data-theme',t);b.textContent=t==='dark'?'light':'dark';try{localStorage.setItem('theme',t)}catch(e){}}
+var t='light';try{t=localStorage.getItem('theme')||'light'}catch(e){}set(t);
+b.addEventListener('click',function(){set(r.getAttribute('data-theme')==='dark'?'light':'dark')});})();
+</script>
+</body>
+</html>

@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Teaching inference hardware to learn">
+<title>Inside the M4 ANE, Part 3</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;0,8..60,700;1,8..60,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+
+<style>
+  :root {
+    --bg: #fafaf8; --fg: #1a1a18; --fg-secondary: #5c5c58; --fg-muted: #8a8a84;
+    --accent: #c45230; --surface: #f0efec; --border: #d8d7d3;
+    --code-bg: #eeedea; --code-fg: #2d2d2a; --table-stripe: #f5f4f1;
+    --diagram-bg: #f5f4f1; --diagram-stroke: #3a3a36; --diagram-fill: #e8e7e3;
+    --diagram-accent: #c45230;
+    --grp-a: #4a7a6a; --grp-b: #5a6a9a; --grp-c: #8a6a4a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #1a1a18; --fg: #e4e4df; --fg-secondary: #a8a8a2; --fg-muted: #6e6e68;
+      --accent: #e07050; --surface: #242422; --border: #3a3a36;
+      --code-bg: #2a2a26; --code-fg: #d4d4cf; --table-stripe: #222220;
+      --diagram-bg: #242422; --diagram-stroke: #b0b0a8; --diagram-fill: #2e2e2a;
+      --diagram-accent: #e07050;
+      --grp-a: #6aaa8a; --grp-b: #7a8aba; --grp-c: #ba9a6a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #1a1a18; --fg: #e4e4df; --fg-secondary: #a8a8a2; --fg-muted: #6e6e68;
+    --accent: #e07050; --surface: #242422; --border: #3a3a36;
+    --code-bg: #2a2a26; --code-fg: #d4d4cf; --table-stripe: #222220;
+    --diagram-bg: #242422; --diagram-stroke: #b0b0a8; --diagram-fill: #2e2e2a;
+    --diagram-accent: #e07050;
+    --grp-a: #6aaa8a; --grp-b: #7a8aba; --grp-c: #ba9a6a;
+  }
+  body { background: var(--bg); color: var(--fg); font-family: 'Source Serif 4', Georgia, 'Times New Roman', serif; font-size: clamp(17px, 0.5vw + 12px, 19px); line-height: 1.6; margin: 0; padding: 0; }
+  .article { width: calc(100% - 48px); max-width: 1100px; margin: 0 auto; padding: 32px 0 64px; }
+  .article > figure { width: 100%; max-width: 860px; margin-left: auto; margin-right: auto; }
+  .article > .pipe { width: 100%; max-width: 1000px; margin-left: auto; margin-right: auto; }
+  .article > .table-wrap, .article > pre { width: 100%; } }
+  .series-label { font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); margin-bottom: 12px; }
+  h1 { font-family: 'Source Serif 4', Georgia, serif; font-size: 36px; font-weight: 700; line-height: 1.2; color: var(--fg); margin: 0 0 8px; text-wrap: balance; }
+  .subtitle { font-size: 19px; font-style: italic; color: var(--fg-secondary); margin-bottom: 20px; line-height: 1.5; }
+  .byline { font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: var(--fg-muted); margin-bottom: 28px; padding-bottom: 16px; border-bottom: 1px solid var(--border); }
+  h2 { font-family: 'Source Serif 4', Georgia, serif; font-size: 24px; font-weight: 600; margin: 36px 0 12px; color: var(--fg); text-wrap: balance; }
+  h3 { font-family: 'Source Serif 4', Georgia, serif; font-size: 20px; font-weight: 600; margin: 24px 0 10px; color: var(--fg); }
+  p { margin: 0 0 14px; }
+  a { color: var(--accent); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  code { font-family: 'IBM Plex Mono', monospace; font-size: 0.85em; background: var(--code-bg); color: var(--code-fg); padding: 2px 5px; border-radius: 3px; }
+  pre { background: var(--code-bg); color: var(--code-fg); font-family: 'IBM Plex Mono', monospace; font-size: 13.5px; line-height: 1.55; padding: 14px 18px; border-radius: 4px; overflow-x: auto; margin: 0 0 18px; border: 1px solid var(--border); }
+  pre code { background: none; padding: 0; font-size: inherit; }
+  table { width: 100%; border-collapse: collapse; font-size: 15px; margin: 0 0 24px; font-variant-numeric: tabular-nums; }
+  th { font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; text-align: left; padding: 8px 12px; border-bottom: 2px solid var(--border); color: var(--fg-secondary); }
+  td { padding: 7px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr:nth-child(even) td { background: var(--table-stripe); }
+  .table-wrap { overflow-x: auto; margin-bottom: 18px; }
+  figure { margin-top: 20px; margin-bottom: 24px; }
+  figcaption { font-size: 14px; color: var(--fg-muted); margin-top: 10px; font-style: italic; line-height: 1.5; }
+  figure svg { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+  hr { border: none; border-top: 1px solid var(--border); margin: 32px 0; }
+  strong { font-weight: 600; }
+  .correction { background: var(--surface); border-left: 3px solid var(--accent); padding: 12px 16px; margin: 16px 0; border-radius: 0 4px 4px 0; font-size: 16px; }
+  .correction p:last-child { margin-bottom: 0; }
+  .ref-list { font-size: 15px; line-height: 1.6; }
+  .ref-list li { margin-bottom: 8px; }
+  @media (max-width: 600px) { h1 { font-size: 28px; } .article { width: calc(100% - 28px); padding: 24px 0 48px; } pre { font-size: 12px; padding: 14px 16px; } }
+
+  /* Interactive pipeline diagram */
+  /* The diagram is 900 units wide; let it break out of the 680px text column so
+     text renders near 1:1 on desktop. On narrow screens it shrinks to the viewport. */
+  .pipe { margin-top: 20px; margin-bottom: 28px; }
+  .pipe-ctl { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-family: 'IBM Plex Mono', monospace; font-size: 12px; }
+  .pipe-ctl button {
+    font-family: inherit; font-size: 12px; padding: 5px 12px; border-radius: 3px; cursor: pointer;
+    background: var(--surface); color: var(--fg); border: 1px solid var(--border);
+  }
+  .pipe-ctl button:hover, .pipe-ctl button:focus-visible { border-color: var(--accent); outline: none; }
+  .pipe-ctl button[disabled] { opacity: .4; cursor: default; }
+  .pipe-ctl .pipe-pos { margin-left: auto; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+  .pipe-ctl .dots { display: flex; gap: 4px; }
+  .pipe-ctl .dots i { width: 8px; height: 8px; border-radius: 50%; background: var(--border); display: block; cursor: pointer; }
+  .pipe-ctl .dots i.on { background: var(--accent); }
+  .pipe-ctl .dots i.done { background: var(--fg-muted); }
+  .pipe svg { width: 100%; height: auto; display: block; background: var(--diagram-bg); border-radius: 4px; border: 1px solid var(--border); }
+  .pipe svg text { font-family: 'IBM Plex Mono', monospace; fill: currentColor; }
+  .pipe .st { opacity: .32; transition: opacity .25s; }
+  .pipe .st.done { opacity: .72; }
+  .pipe .st.on { opacity: 1; }
+  .pipe .st.on .frame { stroke: var(--accent); stroke-width: 1.5; }
+  .pipe [data-from], .pipe [data-until] { transition: opacity .2s; }
+  .pipe .lit { fill: var(--accent); fill-opacity: .75; }
+  .pipe .lit2 { fill: var(--accent); fill-opacity: .35; }
+  .pipe .flow { stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 5 4; animation: pipeflow 1s linear infinite; }
+  @keyframes pipeflow { to { stroke-dashoffset: -18; } }
+  @media (prefers-reduced-motion: reduce) { .pipe .flow { animation: none; } .pipe .st { transition: none; } }
+  .pipe-cap {
+    margin-top: 10px; padding: 12px 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 4px;
+    font-size: 15px; line-height: 1.55; min-height: 74px;
+  }
+  .pipe-cap .cap-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; font-family: 'IBM Plex Mono', monospace; }
+  .pipe-cap .cap-title { font-size: 13px; font-weight: 500; color: var(--accent); }
+  .pipe-cap .ev { font-size: 9px; padding: 2px 6px; border-radius: 2px; letter-spacing: .04em; border: 1px solid; }
+  .pipe-cap .ev.m4 { color: var(--grp-a); border-color: var(--grp-a); }
+  .pipe-cap .ev.m1 { color: var(--grp-c); border-color: var(--grp-c); }
+  .pipe-cap p { margin: 0; }
+  .pipe-cap code { font-size: .82em; }
+
+  /* chart tokens + hover tooltip */
+  :root { --chart-a: #c45230; --chart-b: #3a6fc0; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --chart-a: #e07050; --chart-b: #5f88e0; } }
+  :root[data-theme="dark"] { --chart-a: #e07050; --chart-b: #5f88e0; }
+  figure svg text { font-family: 'IBM Plex Mono', monospace; }
+  .fig-tip { position: fixed; pointer-events: none; z-index: 10; padding: 6px 9px; font: 12px/1.4 'IBM Plex Mono', monospace;
+    background: var(--fg); color: var(--bg); border-radius: 3px; opacity: 0; transition: opacity .12s; white-space: nowrap; }
+  .fig-tip.show { opacity: 1; }
+  [data-tip] { cursor: default; }
+  .bar { transition: fill-opacity .15s; }
+  .bar:hover { fill-opacity: 1; }
+
+  /* ---- readability pass: section rhythm, hierarchy, key findings ---- */
+  .article { counter-reset: sec; }
+  h2 { position: relative; padding-top: 18px; margin-top: 44px; border-top: 2px solid var(--accent); font-size: 26px; }
+  h2::before { counter-increment: sec; content: "§ " counter(sec, decimal-leading-zero); display: block;
+    font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 500; letter-spacing: .12em; color: var(--accent); margin-bottom: 6px; }
+  h2.plain { counter-increment: none; } h2.plain::before { content: none; }
+  h3 { border-left: 3px solid var(--accent); padding-left: 10px; margin-top: 28px; color: var(--fg); }
+  h2 + p { font-size: 1.06em; color: var(--fg); }
+  p { color: color-mix(in srgb, var(--fg) 88%, var(--bg)); }
+  strong { color: var(--fg); }
+  code { color: color-mix(in srgb, var(--accent) 72%, var(--fg)); }
+  pre code { color: var(--code-fg); }
+  th { background: var(--surface); }
+  .key { display: grid; grid-template-columns: auto 1fr; gap: 12px; align-items: baseline;
+    background: color-mix(in srgb, var(--accent) 9%, var(--bg)); border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--bg));
+    border-radius: 4px; padding: 11px 14px; margin: 18px 0 22px; font-size: 16px; color: var(--fg); }
+  .key b { font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; letter-spacing: .12em; color: var(--accent); font-weight: 500; }
+  figcaption { color: color-mix(in srgb, var(--fg) 62%, var(--bg)); }
+  .correction { border-color: var(--grp-b); background: color-mix(in srgb, var(--grp-b) 8%, var(--bg)); }
+  .correction strong { color: var(--grp-b); }
+</style>
+<style>
+  .body-html img{max-width:100%;height:auto;display:block;margin:0 auto;border-radius:4px}
+  .body-html figure{margin:20px auto 24px;max-width:860px}
+  .body-html figcaption,.body-html .image-caption{font-size:14px;color:color-mix(in srgb,var(--fg) 62%,var(--bg));font-style:italic;text-align:center;margin-top:8px}
+  .body-html blockquote{margin:16px 0;padding:8px 18px;border-left:3px solid var(--accent);color:color-mix(in srgb,var(--fg) 80%,var(--bg))}
+  .body-html h4{font-family:'Source Serif 4',Georgia,serif;font-size:18px;margin:20px 0 8px}
+  .body-html pre code{white-space:pre}
+  .series-nav{display:flex;justify-content:space-between;gap:16px;margin-top:40px;padding-top:18px;border-top:1px solid var(--border);font-family:'IBM Plex Mono',monospace;font-size:13px}
+  .origin{font-size:14px;color:color-mix(in srgb,var(--fg) 62%,var(--bg));margin:-16px 0 24px}
+  body{margin:0}
+</style>
+</head>
+<body>
+<article class="article">
+<div class="series-label">Inside the M4 Apple Neural Engine · Part 3</div>
+<h1>Training</h1>
+<p class="subtitle">Teaching inference hardware to learn</p>
+<div class="byline">manjeet singh · 2026-03-07</div>
+<p class="origin">Originally published on <a href="https://maderix.substack.com/p/inside-the-m4-apple-neural-engine-c8b">Substack</a>. Mirrored here with the subscription widgets removed; text and figures unchanged.</p>
+<div class="body-html">
+<div class="captioned-image-container"><figure><div class="image2-inset"><img alt="a blurry image of white lines on a black background" loading="lazy" src="img/01.png"/></div><figcaption class="image-caption">Photo by <a href="https://unsplash.com/@levi_midnight">Denis Sebastian Tamas</a> on <a href="https://unsplash.com">Unsplash</a></figcaption></figure></div><p></p><blockquote><p>March 2026 </p><p><a href="https://github.com/maderix/ANE">https://github.com/maderix/ANE/</a></p></blockquote><p>In <a href="../inside-the-m4-ane-part-1/">Part 1</a> we cracked the ANE’s private APIs: compile, load, evaluate, all without CoreML. In <a href="../inside-the-m4-ane-part-1/">Part 2</a> we benchmarked the hardware. 19 TFLOPS FP16 at 2.8 watts, 6.6 TFLOPS/W efficiency, a 32MB SRAM cliff.</p><p>This post is about what happened next. We trained a transformer on the ANE.</p><p>Not fine-tuning through CoreML. Full forward pass, full backward pass, gradient computation, Adam optimizer updates. 109M parameters learning from scratch on hardware Apple built for inference. Then we scaled it to Qwen3-0.6B (596M parameters, grouped-query attention).</p><p>It took three iterations to get here. Each one hit a different wall.</p><h4>The math</h4><p>A transformer training step has three phases. Forward: push tokens through the network, compute a loss. Backward: propagate gradients back through every layer. Update: adjust weights using the gradients.</p><p>For a single transformer layer, the forward pass does:</p><div class="captioned-image-container"><figure><div class="image2-inset"><img alt="" loading="lazy" src="img/02.png"/></div></figure></div><p>The backward pass is roughly 2× the compute of the forward. You need gradients for both the activations (to propagate backward) and the weights (to update them). For Stories110M (12 layers, dim=768, hidden=2048, seq=256), one training step runs about 1.7 GFLOP of matmuls.</p><p>So how much of this can actually run on the ANE?</p><h4>What runs on ANE, what doesn’t</h4><p>The ANE executes compiled computation graphs. You submit a MIL program, it runs the whole thing atomically. There’s no branching, no indexing by a runtime value, no in-place mutation. This creates a hard split in the training loop:</p><div class="captioned-image-container"><figure><div class="image2-inset"><img alt="" loading="lazy" src="img/03.png"/></div></figure></div><p>The ANE has a native SDPA op, but it ignores the causal attention mask. Output is identical with and without it. So we decompose attention into three dispatches: Q@K^T on ANE, mask+softmax on CPU, scores@V on ANE.</p><p>Weight gradients stay on CPU because they’re large outer products (dW = activation^T @ gradient) that we can overlap with the next layer’s ANE work using GCD. Adam stays on CPU because it mutates weights in-place.</p><h3>Pipeline 1: Static weights (the naive approach)</h3><p>The first working pipeline baked weights directly into the MIL programs as <code>const()</code> tensors. Every weight matrix was a compile-time constant embedded in the ANE binary.</p><div class="captioned-image-container"><figure><div class="image2-inset"><img alt="" loading="lazy" src="img/04.png"/></div></figure></div><p>This means: every time weights change (i.e., every Adam update), you recompile all the kernels. For 12 layers × 5 weight-bearing kernels = 60 compiles per batch, plus 12 weight-free kernels for the backward SDPA. 72 total.</p><p>It worked. 106.7 ms/step, roughly 1.6 TFLOPS combined. But the ANE leaks something (memory, file descriptors, kernel handles, unclear which) at about ~119 compiles per process. After that, compiles start failing.</p><p>The fix: <code>exec()</code>. After every 10 training steps (720 compiles), checkpoint to disk and restart the process:</p><div class="captioned-image-container"><figure><div class="image2-inset"><img alt="" loading="lazy" src="img/05.png"/></div></figure></div><h3>Pipeline 2: ANE-offloaded ops</h3><p>Before tackling compile overhead, we tried moving more work onto the ANE. The classifier forward (a 32000-output matmul), softmax, and RMSNorm backward were candidates.</p><p>This work came from <a href="https://github.com/vipuldivyanshu92">Vipul Divyanshu</a>‘s <a href="https://github.com/maderix/ANE/pull/19">PR #19</a>. He built a C-callable bridge API for ANE access and offloaded the classifier, softmax, and RMSNorm backward kernels. The classifier: 32000 output channels as a 1×1 convolution. Softmax as a standalone ANE kernel. RMSNorm backward with 24 separate kernels (2 per layer). Per-step time dropped to 91.8 ms, 14% faster. But the compile count went from 72 to 86 per batch, making the compile overhead even worse.</p><div class="captioned-image-container"><figure><div class="image2-inset"><img alt="" loading="lazy" src="img/06.png"/></div></figure></div><p>More ANE utilization, worse wall time. The compile overhead ate the per-step gains. We needed to kill recompilation entirely.</p><h3>Pipeline 3: Dynamic weights</h3><p>Instead of embedding weights as constants in the MIL graph, pass them as <em>input data</em> alongside the activations. Pack both into the spatial dimension of a single IOSurface.</p><div class="captioned-image-container"><figure><div class="image2-inset"><img alt="" loading="lazy" src="img/07.png"/></div></figure></div><p>Now the kernel is compiled once. Weights change every step, but they’re just different data written to the same IOSurface. No recompilation, no exec() restarts, no ~119 limit.</p><p>The dynamic pipeline compiles 10 kernels at startup (about 0.4 seconds) and never compiles again:</p><div class="captioned-image-container"><figure><div class="image2-inset"><img alt="" loading="lazy" src="img/08.png"/></div></figure></div><p>Every layer reuses the same 10 kernels. We just write different weights into the IOSurface before each dispatch. Per-layer IOSurfaces are pre-allocated and the weights are staged once before the training loop starts, then updated only after Adam.</p><p>The tradeoff: dynamic weight packing adds CPU overhead for the fp32→fp16 conversion and interleaved write into the spatial dimension. And the ANE can’t fuse the weight load with the computation the way it can with baked constants. But the elimination of recompilation dominates everything.</p><div class="captioned-image-container"><figure><div class="image2-inset"><img alt="" loading="lazy" src="img/09.png"/></div></figure></div><p>Dynamic is now faster per step too (96 vs 107 ms) and 4× faster in wall time at 20 steps. At 1000 steps, static would spend over 12 minutes just compiling.</p><h4>The bugs that almost killed it</h4><p>Two bugs cost lot of time and at least couple of days of head scratch debugging through backward passes and checking Math.</p><h4>Bug 1: FP16 gradient underflow</h4><p>Loss would plateau at ~5.5 and refuse to move. Only the embedding gradient (computed on CPU in fp32) showed any learning signal. Every ANE-computed gradient was effectively zero.</p><div class="captioned-image-container"><figure><div class="image2-inset"><img alt="" loading="lazy" src="img/10.png"/></div></figure></div><p>Fix: loss scaling. Multiply the loss gradient by 256 right after cross-entropy, before it enters the backward pass. All subsequent gradients inherit the scale factor through the chain rule. Divide it back out before the Adam update:</p><div class="captioned-image-container"><figure><div class="image2-inset"><img alt="" loading="lazy" src="img/11.png"/></div></figure></div><p>After these three fixes, loss dropped from 9.11 to 1.02 over 50K steps (~9.3 hours, from scratch). The model started generating coherent children's stories by around step 5K.<br/></p><h4>Bug 2: Transposed weight staging</h4><p>This one was worse. The dynamic matmul kernel computes <code>result = W_staged^T @ activation</code>. For the forward pass, we want <code>Wq @ x</code>, so we stage <em>transposed</em> Wq. The kernel un-transposes it and the math works out.</p><p>For the backward pass, we want <code>Wq^T @ gradient</code>. So we stage the <em>original</em> (non-transposed) Wq. The kernel transposes it again and we get what we need.</p><div class="captioned-image-container"><figure><div class="image2-inset"><img alt="" loading="lazy" src="img/12.png"/></div></figure></div><p>The symptom was identical to bug #1: loss plateau. But this time it was wrong gradients, not zero gradients. The only hint was that embedding still learned (it’s on CPU, no staging involved).</p><h4>DeepNet residual scaling</h4><p>With both bugs fixed, training from scratch still diverged for deep networks. Activations grew exponentially through the residual connections. The fix is from the <a href="https://arxiv.org/abs/2203.00555">DeepNet paper</a>: scale residual additions by α = 1/√(2N) where N is the layer count:</p><div class="captioned-image-container"><figure><div class="image2-inset"><img alt="" loading="lazy" src="img/13.png"/></div></figure></div><p>After these three fixes, loss dropped from 9.11 to 1.02 over 50K steps (~1.3 hours, from scratch). The model started generating coherent children's stories by around step 30K.</p><div class="captioned-image-container"><figure><div class="image2-inset"><img alt="" loading="lazy" src="img/14.png"/></div></figure></div><h3>What it writes</h3><p>Generated text from the Stories110M checkpoint at step 28,600 (loss 1.14), sampling with temperature 0.8 and top-k 50:</p><div class="captioned-image-container"><figure><div class="image2-inset"><img alt="" loading="lazy" src="img/15.png"/></div></figure></div><blockquote><p>One thing we ran into: the model trains on about 9,200 unique tokens from TinyStories out of the full 32K Llama 2 vocabulary. With plain temperature sampling, the ~23K unused tokens still get small but nonzero logit values, and occasionally get sampled. Once one garbage token enters the context, the model goes out-of-distribution and cascades. Top-k filtering (k=50) restricts sampling to the tokens the model actually learned, and the problem goes away entirely.</p></blockquote><h4>Scaling to Qwen3-0.6B</h4><p>Stories110M is a toy model. 12 layers, 768 dim, every head the same size. Qwen3-0.6B is real: 28 layers, 1024 dim, 16 query heads, 8 KV heads, head_dim=128.</p><p>Grouped-query attention (GQA) means Q_DIM = 16×128 = 2048 while DIM = 1024. The attention output lives in a 2048-dimensional space even though the model dimension is 1024. This broke several assumptions.</p><div class="captioned-image-container"><figure><div class="image2-inset"><img alt="" loading="lazy" src="img/16.png"/></div></figure></div><p>The kernel split was the main change. In Stories110M, one kernel handles the full SDPA including the Wo projection, because everything is the same dimension. In Qwen3, the SDPA output is 2048 channels but Wo maps it back to 1024. Different IOSurface sizes, so they become separate kernels. Same story for the backward: qBwd operates on Q_DIM=2048 while kvBwd operates on KV_DIM=1024.</p><p>GQA also means the backward pass through attention needs K and V tiled from 8 heads to 16 heads (to match Q), then the resulting dK, dV gradients need to be reduced back from 16 to 8. These tile/reduce operations happen on CPU between ANE dispatches.</p><p>596M parameters, 28 layers, ~416 ms/step. Loss went from 9.22 to 8.58 in the first 20 steps. Gradient is flowing.</p><h4>The build system</h4><p>Multiple architectures meant we couldn’t hardcode dimensions. Per-model header files, selected at compile time:</p><div class="captioned-image-container"><figure><div class="image2-inset"><img alt="" loading="lazy" src="img/17.png"/></div></figure></div><p>Everything else (weight sizes, IOSurface layouts, MIL kernel shapes, GQA ratios) is derived from these 7 defines. Add a new model by writing a 15-line header file and running <code>make MODEL=mymodel.</code></p><h4>What it looks like</h4><p>The dashboard (built with Python’s <code>blessed</code> library) shows live training metrics, loss curves in braille-art, ANE/CPU power draw from <code>powermetrics</code>, and system memory usage. It parses stdout from the training binary and plots everything in the terminal.</p><div class="captioned-image-container"><figure><div class="image2-inset"><img alt="" loading="lazy" src="img/18.png"/></div></figure></div><p></p><div class="captioned-image-container"><figure><div class="image2-inset"><img alt="" loading="lazy" src="img/19.png"/></div></figure></div><div class="captioned-image-container"><figure><div class="image2-inset"><img alt="" loading="lazy" src="img/20.png"/></div></figure></div><p>~96 ms/step on Stories110M at 2.8W. Training the same model on the M4’s CPU cores would draw 15-20W for similar throughput. The ANE wins on watts, not speed.</p><h3></h3><h3>What we learned</h3><p><strong>Compilation is the bottleneck, not compute.</strong> 91 ms/step with static weights is fine throughput. But the software stack was designed for inference: compile once, run forever. Training broke that. The dynamic weight pipeline works around it, but a real training API would let you update weight buffers without recompiling.</p><p><strong>FP16 is fine for forward, dangerous for backward.</strong> The ANE does everything in FP16 internally. Forward activations stay in range. Backward gradients are products of small numbers, and FP16 eats them. Loss scaling isn’t optional.</p><p><strong>The hardware doesn’t care that it’s “inference only.”</strong> The ANE runs computation graphs. A backward matmul is just another matmul. The constraint is the software, not the silicon. Apple didn’t build a training API, so we did.</p><h3>What’s next</h3><p>Some of what’s happening next:</p><ul><li><p><strong>Mega-kernel layer fusion.</strong> <a href="https://github.com/filipexyz">Luís</a> <a href="https://github.com/maderix/ANE/issues/24">benchmarked</a> fusing full transformer layers into a single MIL program. <strong>3–4× forward speedup</strong>. The bottleneck is ~160μs XPC overhead per dispatch, not compute. 12-layer mega-kernel: 5081μs vs 15227μs for 24 separate evals. Weights are still <code>const()</code> so you’d need gradient accumulation + double-buffered compilation. 4-layer partial fusion looks like the sweet spot, 7.7× with manageable compile times.</p></li><li><p><strong>Community benchmark dashboard.</strong> Submit your contributions to <a href="https://github.com/maderix/ANE/issues/3">issue #3</a> on the repo </p></li><li><p><strong>Beyond training.</strong> <a href="https://github.com/thebasedcapital">thebasedcapital</a> built <a href="https://github.com/maderix/ANE/issues/44">ane-infer</a> (hybrid ANE+Metal, 32 tok/s on Qwen3.5-2B) and <a href="https://github.com/maderix/ANE/issues/43">ane-synth</a> (MIDI neural synth, 157μs per buffer, 79× real-time, 8-voice polyphony).</p></li></ul><hr/><h2>Thank you</h2><blockquote><p>Part 1 was just me poking at private frameworks on an M4 Mac Mini I’d picked up. I did not expect any of this. The github repo is now quite popular and I’m glad folks are finding good usecases out of it.</p></blockquote><ul><li><p><a href="https://github.com/vipuldivyanshu92">Vipul Divyanshu</a> (<a href="https://github.com/maderix/ANE/pull/19">PR #19</a>) built the bridge API and offloaded classifier/softmax/RMSNorm backward to ANE. That’s Pipeline 2 above.</p></li><li><p> <a href="https://github.com/m0at">m0at</a> (<a href="https://github.com/maderix/ANE/pull/2">#2</a>) gave us the first M5 data point.</p></li><li><p> <a href="https://github.com/TastyHeadphones">TastyHeadphones</a> (<a href="https://github.com/maderix/ANE/pull/17">#17</a>) fixed token sampling underflow on short datasets. <a href="https://github.com/guitared">Guitared</a> (<a href="https://github.com/maderix/ANE/pull/20">#20</a>) fixed the dashboard sudo hang.</p></li><li><p> <a href="https://github.com/jskromer">Steve Kromer</a> (<a href="https://github.com/maderix/ANE/pull/27">#27</a>) kept benchmarks working when Apple changed the compile API in macOS 26.</p></li><li><p> <a href="https://github.com/nabbilkhan">Nabbil Khan</a> (<a href="https://github.com/maderix/ANE/pull/29">#29</a>) fixed the hardcoded paths that broke the repo for everyone whose directory layout wasn’t mine.</p></li><li><p> <a href="https://github.com/alvgeppetto-debug">alvgeppetto-debug</a> (<a href="https://github.com/maderix/ANE/pull/31">#31</a>) and <a href="https://github.com/04cb">layla</a> (<a href="https://github.com/maderix/ANE/pull/34">#34</a>) on correctness fixes and docs.</p></li><li><p>And <a href="https://github.com/filipexyz">Luís</a> for the mega-kernel fusion research, <a href="https://github.com/dev-erik">Erik</a> for the community benchmark dashboard, <a href="https://github.com/thebasedcapital">thebasedcapital</a> for building an inference engine and a neural synth on top of this.</p></li></ul>
+</div>
+<nav class="series-nav"><a href="../inside-the-m4-ane-part-2/">← Part 2</a><a href="../">All articles</a><a href="../inside-the-m4-ane-part-4/">Part 4 →</a></nav>
+</article>
+<button id="theme-toggle" type="button" aria-label="Toggle dark mode" style="position:fixed;top:14px;right:14px;z-index:20;font:12px 'IBM Plex Mono',monospace;padding:6px 10px;border-radius:3px;border:1px solid var(--border);background:var(--surface);color:var(--fg);cursor:pointer">dark</button>
+<script>
+(function(){var r=document.documentElement,b=document.getElementById('theme-toggle');
+function set(t){r.setAttribute('data-theme',t);b.textContent=t==='dark'?'light':'dark';try{localStorage.setItem('theme',t)}catch(e){}}
+var t='light';try{t=localStorage.getItem('theme')||'light'}catch(e){}set(t);
+b.addEventListener('click',function(){set(r.getAttribute('data-theme')==='dark'?'light':'dark')});})();
+</script>
+</body>
+</html>

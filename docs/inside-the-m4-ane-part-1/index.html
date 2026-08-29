@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="How we bypassed CoreML and talked directly to the hardware">
+<title>Inside the M4 ANE, Part 1</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;0,8..60,700;1,8..60,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+
+<style>
+  :root {
+    --bg: #fafaf8; --fg: #1a1a18; --fg-secondary: #5c5c58; --fg-muted: #8a8a84;
+    --accent: #c45230; --surface: #f0efec; --border: #d8d7d3;
+    --code-bg: #eeedea; --code-fg: #2d2d2a; --table-stripe: #f5f4f1;
+    --diagram-bg: #f5f4f1; --diagram-stroke: #3a3a36; --diagram-fill: #e8e7e3;
+    --diagram-accent: #c45230;
+    --grp-a: #4a7a6a; --grp-b: #5a6a9a; --grp-c: #8a6a4a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #1a1a18; --fg: #e4e4df; --fg-secondary: #a8a8a2; --fg-muted: #6e6e68;
+      --accent: #e07050; --surface: #242422; --border: #3a3a36;
+      --code-bg: #2a2a26; --code-fg: #d4d4cf; --table-stripe: #222220;
+      --diagram-bg: #242422; --diagram-stroke: #b0b0a8; --diagram-fill: #2e2e2a;
+      --diagram-accent: #e07050;
+      --grp-a: #6aaa8a; --grp-b: #7a8aba; --grp-c: #ba9a6a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #1a1a18; --fg: #e4e4df; --fg-secondary: #a8a8a2; --fg-muted: #6e6e68;
+    --accent: #e07050; --surface: #242422; --border: #3a3a36;
+    --code-bg: #2a2a26; --code-fg: #d4d4cf; --table-stripe: #222220;
+    --diagram-bg: #242422; --diagram-stroke: #b0b0a8; --diagram-fill: #2e2e2a;
+    --diagram-accent: #e07050;
+    --grp-a: #6aaa8a; --grp-b: #7a8aba; --grp-c: #ba9a6a;
+  }
+  body { background: var(--bg); color: var(--fg); font-family: 'Source Serif 4', Georgia, 'Times New Roman', serif; font-size: clamp(17px, 0.5vw + 12px, 19px); line-height: 1.6; margin: 0; padding: 0; }
+  .article { width: calc(100% - 48px); max-width: 1100px; margin: 0 auto; padding: 32px 0 64px; }
+  .article > figure { width: 100%; max-width: 860px; margin-left: auto; margin-right: auto; }
+  .article > .pipe { width: 100%; max-width: 1000px; margin-left: auto; margin-right: auto; }
+  .article > .table-wrap, .article > pre { width: 100%; } }
+  .series-label { font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); margin-bottom: 12px; }
+  h1 { font-family: 'Source Serif 4', Georgia, serif; font-size: 36px; font-weight: 700; line-height: 1.2; color: var(--fg); margin: 0 0 8px; text-wrap: balance; }
+  .subtitle { font-size: 19px; font-style: italic; color: var(--fg-secondary); margin-bottom: 20px; line-height: 1.5; }
+  .byline { font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: var(--fg-muted); margin-bottom: 28px; padding-bottom: 16px; border-bottom: 1px solid var(--border); }
+  h2 { font-family: 'Source Serif 4', Georgia, serif; font-size: 24px; font-weight: 600; margin: 36px 0 12px; color: var(--fg); text-wrap: balance; }
+  h3 { font-family: 'Source Serif 4', Georgia, serif; font-size: 20px; font-weight: 600; margin: 24px 0 10px; color: var(--fg); }
+  p { margin: 0 0 14px; }
+  a { color: var(--accent); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  code { font-family: 'IBM Plex Mono', monospace; font-size: 0.85em; background: var(--code-bg); color: var(--code-fg); padding: 2px 5px; border-radius: 3px; }
+  pre { background: var(--code-bg); color: var(--code-fg); font-family: 'IBM Plex Mono', monospace; font-size: 13.5px; line-height: 1.55; padding: 14px 18px; border-radius: 4px; overflow-x: auto; margin: 0 0 18px; border: 1px solid var(--border); }
+  pre code { background: none; padding: 0; font-size: inherit; }
+  table { width: 100%; border-collapse: collapse; font-size: 15px; margin: 0 0 24px; font-variant-numeric: tabular-nums; }
+  th { font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; text-align: left; padding: 8px 12px; border-bottom: 2px solid var(--border); color: var(--fg-secondary); }
+  td { padding: 7px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr:nth-child(even) td { background: var(--table-stripe); }
+  .table-wrap { overflow-x: auto; margin-bottom: 18px; }
+  figure { margin-top: 20px; margin-bottom: 24px; }
+  figcaption { font-size: 14px; color: var(--fg-muted); margin-top: 10px; font-style: italic; line-height: 1.5; }
+  figure svg { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+  hr { border: none; border-top: 1px solid var(--border); margin: 32px 0; }
+  strong { font-weight: 600; }
+  .correction { background: var(--surface); border-left: 3px solid var(--accent); padding: 12px 16px; margin: 16px 0; border-radius: 0 4px 4px 0; font-size: 16px; }
+  .correction p:last-child { margin-bottom: 0; }
+  .ref-list { font-size: 15px; line-height: 1.6; }
+  .ref-list li { margin-bottom: 8px; }
+  @media (max-width: 600px) { h1 { font-size: 28px; } .article { width: calc(100% - 28px); padding: 24px 0 48px; } pre { font-size: 12px; padding: 14px 16px; } }
+
+  /* Interactive pipeline diagram */
+  /* The diagram is 900 units wide; let it break out of the 680px text column so
+     text renders near 1:1 on desktop. On narrow screens it shrinks to the viewport. */
+  .pipe { margin-top: 20px; margin-bottom: 28px; }
+  .pipe-ctl { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-family: 'IBM Plex Mono', monospace; font-size: 12px; }
+  .pipe-ctl button {
+    font-family: inherit; font-size: 12px; padding: 5px 12px; border-radius: 3px; cursor: pointer;
+    background: var(--surface); color: var(--fg); border: 1px solid var(--border);
+  }
+  .pipe-ctl button:hover, .pipe-ctl button:focus-visible { border-color: var(--accent); outline: none; }
+  .pipe-ctl button[disabled] { opacity: .4; cursor: default; }
+  .pipe-ctl .pipe-pos { margin-left: auto; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+  .pipe-ctl .dots { display: flex; gap: 4px; }
+  .pipe-ctl .dots i { width: 8px; height: 8px; border-radius: 50%; background: var(--border); display: block; cursor: pointer; }
+  .pipe-ctl .dots i.on { background: var(--accent); }
+  .pipe-ctl .dots i.done { background: var(--fg-muted); }
+  .pipe svg { width: 100%; height: auto; display: block; background: var(--diagram-bg); border-radius: 4px; border: 1px solid var(--border); }
+  .pipe svg text { font-family: 'IBM Plex Mono', monospace; fill: currentColor; }
+  .pipe .st { opacity: .32; transition: opacity .25s; }
+  .pipe .st.done { opacity: .72; }
+  .pipe .st.on { opacity: 1; }
+  .pipe .st.on .frame { stroke: var(--accent); stroke-width: 1.5; }
+  .pipe [data-from], .pipe [data-until] { transition: opacity .2s; }
+  .pipe .lit { fill: var(--accent); fill-opacity: .75; }
+  .pipe .lit2 { fill: var(--accent); fill-opacity: .35; }
+  .pipe .flow { stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 5 4; animation: pipeflow 1s linear infinite; }
+  @keyframes pipeflow { to { stroke-dashoffset: -18; } }
+  @media (prefers-reduced-motion: reduce) { .pipe .flow { animation: none; } .pipe .st { transition: none; } }
+  .pipe-cap {
+    margin-top: 10px; padding: 12px 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 4px;
+    font-size: 15px; line-height: 1.55; min-height: 74px;
+  }
+  .pipe-cap .cap-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; font-family: 'IBM Plex Mono', monospace; }
+  .pipe-cap .cap-title { font-size: 13px; font-weight: 500; color: var(--accent); }
+  .pipe-cap .ev { font-size: 9px; padding: 2px 6px; border-radius: 2px; letter-spacing: .04em; border: 1px solid; }
+  .pipe-cap .ev.m4 { color: var(--grp-a); border-color: var(--grp-a); }
+  .pipe-cap .ev.m1 { color: var(--grp-c); border-color: var(--grp-c); }
+  .pipe-cap p { margin: 0; }
+  .pipe-cap code { font-size: .82em; }
+
+  /* chart tokens + hover tooltip */
+  :root { --chart-a: #c45230; --chart-b: #3a6fc0; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --chart-a: #e07050; --chart-b: #5f88e0; } }
+  :root[data-theme="dark"] { --chart-a: #e07050; --chart-b: #5f88e0; }
+  figure svg text { font-family: 'IBM Plex Mono', monospace; }
+  .fig-tip { position: fixed; pointer-events: none; z-index: 10; padding: 6px 9px; font: 12px/1.4 'IBM Plex Mono', monospace;
+    background: var(--fg); color: var(--bg); border-radius: 3px; opacity: 0; transition: opacity .12s; white-space: nowrap; }
+  .fig-tip.show { opacity: 1; }
+  [data-tip] { cursor: default; }
+  .bar { transition: fill-opacity .15s; }
+  .bar:hover { fill-opacity: 1; }
+
+  /* ---- readability pass: section rhythm, hierarchy, key findings ---- */
+  .article { counter-reset: sec; }
+  h2 { position: relative; padding-top: 18px; margin-top: 44px; border-top: 2px solid var(--accent); font-size: 26px; }
+  h2::before { counter-increment: sec; content: "§ " counter(sec, decimal-leading-zero); display: block;
+    font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 500; letter-spacing: .12em; color: var(--accent); margin-bottom: 6px; }
+  h2.plain { counter-increment: none; } h2.plain::before { content: none; }
+  h3 { border-left: 3px solid var(--accent); padding-left: 10px; margin-top: 28px; color: var(--fg); }
+  h2 + p { font-size: 1.06em; color: var(--fg); }
+  p { color: color-mix(in srgb, var(--fg) 88%, var(--bg)); }
+  strong { color: var(--fg); }
+  code { color: color-mix(in srgb, var(--accent) 72%, var(--fg)); }
+  pre code { color: var(--code-fg); }
+  th { background: var(--surface); }
+  .key { display: grid; grid-template-columns: auto 1fr; gap: 12px; align-items: baseline;
+    background: color-mix(in srgb, var(--accent) 9%, var(--bg)); border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--bg));
+    border-radius: 4px; padding: 11px 14px; margin: 18px 0 22px; font-size: 16px; color: var(--fg); }
+  .key b { font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; letter-spacing: .12em; color: var(--accent); font-weight: 500; }
+  figcaption { color: color-mix(in srgb, var(--fg) 62%, var(--bg)); }
+  .correction { border-color: var(--grp-b); background: color-mix(in srgb, var(--grp-b) 8%, var(--bg)); }
+  .correction strong { color: var(--grp-b); }
+</style>
+<style>
+  .body-html img{max-width:100%;height:auto;display:block;margin:0 auto;border-radius:4px}
+  .body-html figure{margin:20px auto 24px;max-width:860px}
+  .body-html figcaption,.body-html .image-caption{font-size:14px;color:color-mix(in srgb,var(--fg) 62%,var(--bg));font-style:italic;text-align:center;margin-top:8px}
+  .body-html blockquote{margin:16px 0;padding:8px 18px;border-left:3px solid var(--accent);color:color-mix(in srgb,var(--fg) 80%,var(--bg))}
+  .body-html h4{font-family:'Source Serif 4',Georgia,serif;font-size:18px;margin:20px 0 8px}
+  .body-html pre code{white-space:pre}
+  .series-nav{display:flex;justify-content:space-between;gap:16px;margin-top:40px;padding-top:18px;border-top:1px solid var(--border);font-family:'IBM Plex Mono',monospace;font-size:13px}
+  .origin{font-size:14px;color:color-mix(in srgb,var(--fg) 62%,var(--bg));margin:-16px 0 24px}
+  body{margin:0}
+</style>
+</head>
+<body>
+<article class="article">
+<div class="series-label">Inside the M4 Apple Neural Engine · Part 1</div>
+<h1>Reverse Engineering</h1>
+<p class="subtitle">How we bypassed CoreML and talked directly to the hardware</p>
+<div class="byline">manjeet singh · 2026-02-28</div>
+<p class="origin">Originally published on <a href="https://maderix.substack.com/p/inside-the-m4-apple-neural-engine">Substack</a>. Mirrored here with the subscription widgets removed; text and figures unchanged.</p>
+<div class="body-html">
+<div class="captioned-image-container"><figure><div class="image2-inset"><img alt="" loading="lazy" src="img/01.jpg"/></div></figure></div><hr/><blockquote><p><strong>A note on “we”:</strong></p><p>Throughout this series, <em>“we”</em> refers to <strong>maderix</strong> (human) and <strong>Claude Opus 4.6</strong> (by Anthropic) working as a pair. The reverse engineering, benchmarking, and training code were developed collaboratively — human intuition driving the exploration, AI reasoning through the data and writing the analysis. We think this kind of human–AI collaboration is a new and natural way to do systems research: one partner as the <strong>architect</strong> with intuition, the other as the <strong>engineer</strong> writing the code and crafting experiments .</p></blockquote><p>This whole thing started with a simple question: <em>can you train a model on Apple’s Neural Engine?</em></p><p><strong>Apple</strong> doesn’t want you to know the answer. They don’t publish the ANE’s ISA. They don’t document its internal architecture. They don’t even give you a way to program it directly — everything goes through <a href="https://developer.apple.com/documentation/coreml">CoreML</a>, which adds layers of abstraction, optimization passes, and overhead that make it nearly impossible to understand what the hardware is actually doing.</p><p>So we reverse-engineered it.</p><p>Over several days, we mapped the entire software stack from CoreML down to the IOKit kernel driver, discovered how to compile and execute programs on the ANE without CoreML, cracked the binary format, measured the true peak performance (spoiler: Apple’s “38 TOPS” number is misleading), and ultimately got a neural network <em>training</em> on a chip designed exclusively for inference.</p><p>This is Part 1 of a three-part series. Here we cover the reverse engineering — how we peeled back the layers to understand what the M4 Neural Engine actually is and how to talk to it directly.</p><h2>What is the Neural Engine?</h2><p>The ANE is not a GPU. It’s not a CPU. It’s a <strong>graph execution engine</strong> — a fixed-function accelerator that takes a compiled neural network graph and executes the entire thing as one atomic operation. You don’t issue individual multiply-accumulate instructions. You submit a compiled program describing an entire computation graph, and the hardware executes it end-to-end.</p><p>Apple introduced the Neural Engine in the A11 (2017) as a 2-core design. Each generation has scaled it up:</p><div class="captioned-image-container"><figure><div class="image2-inset"><img alt="" loading="lazy" src="img/02.png"/></div></figure></div><p></p><p>The M4’s ANE (codename <strong>H16G</strong>) is what we’re working with. 16 cores, a queue depth of 127 evaluation requests, independent DVFS (dynamic voltage/frequency scaling), and hard power gating that drops it to exactly 0 milliwatts when idle.</p><h2>Prior Art</h2><p>We weren’t the first to poke at ANE internals. </p><ul><li><p><strong><a href="https://github.com/hollance/neural-engine">hollance/neural-engine</a></strong> — Matthijs Hollemans’ comprehensive community documentation of ANE behavior, performance characteristics, and supported operations. The single best existing resource on ANE.</p></li><li><p><strong><a href="https://github.com/mdaiter/ane">mdaiter/ane</a></strong> — Early reverse engineering with working Python and Objective-C samples, documenting the ANECompiler framework and IOKit dispatch.</p></li><li><p><strong><a href="https://github.com/eiln/ane">eiln/ane</a></strong> — A reverse-engineered Linux driver for ANE (Asahi Linux project), providing insight into the kernel-level interface.</p></li><li><p><strong><a href="https://github.com/apple/ml-ane-transformers">apple/ml-ane-transformers</a></strong> — Apple’s own reference implementation of transformers optimized for ANE, confirming design patterns like channel-first layout and 1×1 conv preference.</p></li></ul><p>But to our knowledge, nobody had previously: (a) achieved direct <code>_ANEClient</code> API access without CoreML on M4, (b) cracked the in-memory MIL compilation path, (c) measured true peak throughput bypassing CoreML overhead, or (d) trained a model on ANE.</p><h2>Methodology</h2><p>Our approach combined several techniques:</p><ol><li><p><strong>Class discovery</strong> via <code>dyld_info -objc</code> on <code>AppleNeuralEngine.framework</code> — this dumps every Objective-C class and method</p></li><li><p><strong>Method swizzling</strong> to intercept CoreML’s calls to the private ANE frameworks</p></li><li><p><strong>Binary analysis</strong> of compiled E5 bundles to understand the neural program format</p></li><li><p><strong>Scaling analysis</strong> — varying matrix sizes, graph depths, and channel counts to infer hardware topology</p></li></ol><p>We discovered 40+ private classes in <code>AppleNeuralEngine.framework</code>, including <code>_ANEClient</code>, <code>_ANEModel</code>, <code>_ANERequest</code>, <code>_ANEIOSurfaceObject</code>, <code>_ANEInMemoryModel</code>, and many more.</p><h2>The Software Stack</h2><p>Here’s what the full ANE software stack looks like, from the public CoreML API down to hardware:</p><div class="captioned-image-container"><figure><div class="image2-inset"><img alt="" loading="lazy" src="img/03.png"/></div></figure></div><p></p><p>The key insight: CoreML is <em>not</em> the only way in. The <code>_ANEClient</code> class in <code>AppleNeuralEngine.framework</code> provides direct access to the compile → load → evaluate pipeline. CoreML is just a convenience layer on top.</p><h2>_ANEClient: Direct Access to the Neural Engine</h2><p>Here’s the complete sequence to compile and run a program on ANE without CoreML:</p><div class="highlighted_code_block"><pre class="shiki"><code class="language-c">// 1. Get shared client connection
+id client = [_ANEClient sharedConnection];
+
+// 2. Create model reference
+id model = [_ANEModel modelAtURL:compiledURL key:@"mykey"];
+
+// 3. Compile (MIL text → E5 binary, result is cached)
+[client compileModel:model options:@{
+    @"kANEFModelType": @"kANEFModelMIL",
+    @"kANEFNetPlistFilenameKey": @"model.mil"
+} qos:21 error:&amp;err];
+
+// 4. Load program onto ANE hardware
+[client loadModel:model options:@{} qos:21 error:&amp;err];
+// → programHandle assigned, queueDepth = 127
+
+// 5. Create IOSurface I/O buffers
+IOSurfaceRef surface = IOSurfaceCreate(props);
+id wrapped = [_ANEIOSurfaceObject objectWithIOSurface:surface];
+
+// 6. Build evaluation request
+id req = [_ANERequest requestWithInputs:@[wA, wB]
+    inputIndices:@[@0, @1]
+    outputs:@[wOut]
+    outputIndices:@[@0]
+    weightsBuffer:nil
+    perfStats:nil
+    procedureIndex:@0];
+
+// 7. Execute on ANE
+[client evaluateWithModel:model options:@{}
+    request:req qos:21 error:&amp;err];
+
+// 8. Read results from output IOSurface
+IOSurfaceLock(outSurface, kIOSurfaceLockReadOnly, NULL);
+float *data = IOSurfaceGetBaseAddress(outSurface);
+// ... read results ...
+IOSurfaceUnlock(outSurface, kIOSurfaceLockReadOnly, NULL);</code></pre></div><p>The I/O uses <strong>IOSurfaces</strong> — the same shared memory mechanism used for GPU textures. This means zero-copy transfers between GPU and ANE are theoretically possible if you share the same IOSurfaceRef.</p><blockquote><p><strong>Key finding:</strong> The ANE supports a queue depth of 127 — you can have up to 127 evaluation requests in-flight simultaneously. This is far deeper than most accelerator queues and suggests the hardware is designed for high-throughput streaming inference.</p></blockquote><h2>MIL: The Input Language</h2><p>CoreML doesn’t send neural networks to ANE in ONNX or protobuf format. It uses <strong>MIL</strong> — Machine Learning Intermediate Language — a typed SSA (Static Single Assignment) representation that looks like this:</p><div class="highlighted_code_block"><pre class="shiki"><code class="language-c">program(1.3)
+[buildInfo = dict&lt;string, string&gt;({
+    {"coremltools-version", "9.0"}
+})]
+{
+    func main&lt;ios18&gt;(
+        tensor&lt;fp16, [1, 1024, 1, 1024]&gt; x,
+        tensor&lt;fp16, [1, 1024, 1, 1024]&gt; w
+    ) {
+        bool tx = const()[val = bool(false)];
+        bool ty = const()[val = bool(false)];
+        tensor&lt;fp16, [1, 1024, 1, 1024]&gt; out =
+            matmul(transpose_x = tx, transpose_y = ty,
+                   x = x, y = w);
+    } -&gt; (out);
+}</code></pre></div><p>MIL is surprisingly readable. Every value is typed with both precision and shape. Operations are named and take keyword arguments. The function signature declares input tensors with explicit dimensions.</p><p>The tensor layout follows ANE’s native <strong>NCDHW + Interleave</strong> format: <code>[Batch, Channels, Depth, Height, Width]</code>. For a 1024×1024 matrix, this becomes <code>[1, 1024, 1, 1024]</code> in 4D.</p><h2>E5 Binary: The Compiled Format</h2><p>When ANECompiler processes a MIL program, it produces an <strong>E5 binary</strong> — a FlatBuffer-structured file with these sections:</p><div class="captioned-image-container"><figure><div class="image2-inset"><img alt="" loading="lazy" src="img/04.png"/></div></figure></div><p></p><p>Here’s the fascinating part: a 1024×1024 matmul compiles to <strong>2,688 bytes</strong>. A 128×128 matmul compiles to <strong>2,680 bytes</strong>. Nearly identical. The E5 binary isn’t encoding the matrix multiplication algorithm — it’s encoding a <em>parameterized program</em> whose behavior is controlled by tensor descriptors at runtime. The “microcode” is more like a configuration than traditional machine code.</p><blockquote><p><strong>Implication:</strong> The ANE hardware likely has a small set of fixed compute primitives (convolution, matrix multiply, elementwise) that are parameterized by tensor shape descriptors. The E5 binary describes which primitives to chain and how to connect them, not the compute itself.</p></blockquote><h2>The In-Memory Path: The Holy Grail</h2><p>The file-based compilation path works but has a problem: it requires writing MIL text to disk, creating a directory structure, and pointing the compiler at it. For training — where we need to recompile with updated weights every few steps — this filesystem round-trip is unacceptable.</p><p>We discovered <code>_ANEInMemoryModelDescriptor</code>, which accepts MIL text directly in memory:</p><div class="highlighted_code_block"><pre class="shiki"><code class="language-c">id desc = [_ANEInMemoryModelDescriptor
+    modelWithMILText:milData      // NSData*, not NSString*!
+    weights:weightDict            // NSDictionary*, not NSData*!
+    optionsPlist:nil];
+
+id model = [_ANEInMemoryModel
+    inMemoryModelWithDescriptor:desc];
+
+[model compileWithQoS:21 options:@{} error:&amp;err];
+[model loadWithQoS:21 options:@{} error:&amp;err];
+[model evaluateWithQoS:21 options:@{}
+    request:req error:&amp;err];</code></pre></div><p>Getting this to work required solving three gotchas that cost us days of debugging:</p><ol><li><p><strong>NSData, not NSString</strong>: The <code>milText</code> parameter wants an <code>NSData*</code> containing UTF-8 bytes, not an <code>NSString*</code>. Passing a string fails silently.</p></li><li><p><strong>NSDictionary, not NSData</strong>: The <code>weights</code> parameter is a dictionary mapping weight names to NSData blobs, not a single data buffer.</p></li><li><p><strong>Temp directory workaround</strong>: Even the “in-memory” path internally writes to a temp directory. If you don’t have write access to the default location, compilation fails with an opaque error. We had to ensure a writable temp path was available.</p></li></ol><p>And one delightful discovery: Apple’s internal code references a <code>Desctiptor</code> (sic) in one of the class names. Even Apple engineers make typos in private APIs. :)</p><h2>Hardware Profile: What We Know</h2><p>Through IOKit probing, scaling analysis, and power measurement, we’ve built this profile of the M4 ANE:</p><div class="captioned-image-container"><figure><div class="image2-inset"><img alt="" loading="lazy" src="img/05.png"/></div></figure></div><p></p><h3>DVFS Channels</h3><p>IOKit’s <code>IOReportLegend</code> reveals the ANE has its own independent power management with adaptive clocking, dithering, and multiple hardware/software triggers:</p><div class="highlighted_code_block"><pre class="shiki"><code class="language-plaintext">ANE_ADCLK_TRIG    — adaptive clock trigger
+ANE_ADHWTRG       — hardware adaptive trigger
+ANE_ADSWTRG       — software adaptive trigger
+ANE_DITHR_TRIG    — dithering trigger
+ANE_PPT_TRIG      — power/performance tuning
+ANE_PPT_SWTRG     — software PPT trigger
+ANE_PPT_HWTRG     — hardware PPT trigger
+ANE_EXT_TRIG0-3   — external triggers</code></pre></div><p>This level of DVFS sophistication suggests the ANE can independently scale its frequency and voltage based on workload characteristics, separate from the CPU and GPU power domains.</p><h3>Supported Operations</h3><p>From <code>ANECompiler.framework</code> exports, the ANE natively supports:</p><div class="captioned-image-container"><figure><div class="image2-inset"><img alt="" loading="lazy" src="img/06.png"/></div></figure></div><p></p><p>Notably, Conv appears to be the ANE’s primary compute primitive. As we’ll show in Part 2, expressing matmul as 1×1 convolution unlocks significantly higher throughput.</p><h2>The IOSurface Protocol</h2><p>All data transfer to and from the ANE uses IOSurfaces. The protocol is straightforward:</p><div class="highlighted_code_block"><pre class="shiki"><code class="language-c">// Create an IOSurface for a 1024x1024 float tensor
+NSDictionary *props = @{
+    @"IOSurfaceWidth":           @(1024),
+    @"IOSurfaceHeight":          @(1024),
+    @"IOSurfaceBytesPerElement": @(4),     // float32
+    @"IOSurfaceBytesPerRow":     @(4096),  // 1024 * 4
+    @"IOSurfaceAllocSize":       @(4194304),
+    @"IOSurfacePixelFormat":     @(0)
+};
+IOSurfaceRef surface = IOSurfaceCreate(props);
+
+// Write data
+IOSurfaceLock(surface, 0, NULL);
+float *ptr = IOSurfaceGetBaseAddress(surface);
+memcpy(ptr, data, 4194304);
+IOSurfaceUnlock(surface, 0, NULL);
+
+// Wrap for ANE
+id wrapped = [_ANEIOSurfaceObject objectWithIOSurface:surface];</code></pre></div><p>Since IOSurfaces are the same mechanism used for GPU texture sharing, this opens up the possibility of zero-copy GPU↔ANE pipelines where both accelerators operate on the same memory.</p><h2>Compilation Cache</h2><p>The ANE compiler caches E5 binaries on disk to avoid recompilation:</p><div class="highlighted_code_block"><pre class="shiki"><code class="language-shell">~/Library/Caches/&lt;app&gt;/com.apple.e5rt.e5bundlecache/&lt;build&gt;/&lt;hash&gt;/
+  &lt;hash&gt;.bundle/
+  └── H16G.bundle/           ← H16G = M4 ANE target
+      ├── H16G.e5            ← FlatBuffer binary (2-3 KB)
+      └── main/
+          └── main_ane/
+              └── model.anehash</code></pre></div><p>First compile takes ~20-40ms. Cache hits are effectively free. This matters for inference (compile once, run forever) but creates challenges for training, where weights change every step.</p><h2>Unexplored Territory</h2><p>Several discovered classes remain unexplored and hint at capabilities we haven’t tested:</p><ul><li><p><code>_ANEChainingRequest</code> — may enable chaining multiple compiled models in a single dispatch</p></li><li><p><code>_ANESharedEvents</code> / <code>_ANESharedSignalEvent</code> / <code>_ANESharedWaitEvent</code> — Metal-style fence/signal primitives for GPU↔ANE synchronization</p></li><li><p><code>_ANEPerformanceStats</code> — possibly hardware performance counters</p></li><li><p><code>_ANEVirtualClient</code> — virtualized ANE access, potentially for multi-process sharing</p></li></ul><p>And some things we genuinely don’t know:</p><ul><li><p>The exact ANE core microarchitecture and ISA</p></li><li><p>How cores are assigned to operations within a graph</p></li><li><p>The ANE clock frequency (DVFS makes this dynamic)</p></li><li><p>Whether hardware perf counters are accessible</p></li><li><p>The exact SRAM topology (banked? unified? per-core?)</p></li></ul><h2>What’s Next</h2><p>Now that we have direct access to the ANE, we can actually measure what it can do. In <strong><a href="../inside-the-m4-ane-part-1/">Part 2</a></strong><a href="../inside-the-m4-ane-part-1/">,</a> we’ll benchmark everything: matmul scaling, the SRAM performance cliff, why convolution is 3× faster than matmul, why Apple’s “38 TOPS” claim is misleading, and how bypassing CoreML gives you 2-4× more throughput.</p><p>In <strong>Part 3</strong>, we’ll do the thing Apple says you can’t: train a neural network on the Neural Engine.</p><hr/><blockquote><p><em>All code is available at <a href="https://github.com/maderix/ANE">github.com/maderix/ANE</a> in the </em><code>ane/</code><em> directory. Tested on M4 Mac Mini, macOS 15.x.</em></p></blockquote>
+</div>
+<nav class="series-nav"><a href="../">Index</a><a href="../">All articles</a><a href="../inside-the-m4-ane-part-2/">Part 2 →</a></nav>
+</article>
+<button id="theme-toggle" type="button" aria-label="Toggle dark mode" style="position:fixed;top:14px;right:14px;z-index:20;font:12px 'IBM Plex Mono',monospace;padding:6px 10px;border-radius:3px;border:1px solid var(--border);background:var(--surface);color:var(--fg);cursor:pointer">dark</button>
+<script>
+(function(){var r=document.documentElement,b=document.getElementById('theme-toggle');
+function set(t){r.setAttribute('data-theme',t);b.textContent=t==='dark'?'light':'dark';try{localStorage.setItem('theme',t)}catch(e){}}
+var t='light';try{t=localStorage.getItem('theme')||'light'}catch(e){}set(t);
+b.addEventListener('click',function(){set(r.getAttribute('data-theme')==='dark'?'light':'dark')});})();
+</script>
+</body>
+</html>
