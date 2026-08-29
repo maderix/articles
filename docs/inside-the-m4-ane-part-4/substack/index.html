@@ -1,11 +1,15 @@
-<!DOCTYPE doctype html>
-<html lang="en"><head><meta charset="utf-8"/><meta content="width=device-width, initial-scale=1" name="viewport"/><title>Part 4 — Substack paste source</title>
-<style>body{font:17px/1.6 Georgia,serif;max-width:760px;margin:40px auto;padding:0 20px;color:#1a1a18;background:#fff} .note{background:#fff6f2;border:1px solid #e8c9bd;padding:12px 16px;font:14px/1.5 monospace;margin-bottom:28px} img{max-width:100%;height:auto} blockquote{border-left:3px solid #c45230;margin:16px 0;padding:6px 16px;background:#faf6f3} table{border-collapse:collapse;width:100%;font-size:15px} td,th{border:1px solid #ddd;padding:6px 10px;text-align:left} pre{background:#f2f1ee;padding:12px 16px;overflow:auto;font-size:13px} code{font-family:ui-monospace,Menlo,monospace;font-size:.9em}</style></head><body>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Part 4 — Substack paste source</title>
+<style>body{font:17px/1.6 Georgia,serif;max-width:760px;margin:40px auto;padding:0 20px;color:#1a1a18;background:#fff} img{max-width:100%;height:auto} blockquote{border-left:3px solid #c45230;margin:16px 0;padding:6px 16px;background:#faf6f3} table{border-collapse:collapse;width:100%;font-size:15px} td,th{border:1px solid #ddd;padding:6px 10px;text-align:left} pre{background:#f2f1ee;padding:12px 16px;overflow:auto;font-size:13px} code{font-family:ui-monospace,Menlo,monospace;font-size:.9em}</style></head><body>
+
+
+
+
+
 <p>Parts <a href="https://maderix.substack.com/p/inside-the-m4-apple-neural-engine">1</a>, <a href="https://maderix.substack.com/p/inside-the-m4-apple-neural-engine-615">2</a>, and <a href="https://maderix.substack.com/p/inside-the-m4-apple-neural-engine-c8b">3</a> of this series treated the ANE as a tool. We compiled models to it, measured how fast they ran, and trained a transformer on it. But we never described the machine itself. What is the ANE as a piece of silicon? How is it organized? What can it compute, and why does it behave the way we measured?</p>
 <p>Most of what follows is our own reverse engineering on an M4, done across Parts 1–3 and the months since: the private API surface below CoreML and the in-memory compile path; the compiled program format (a Mach-O with magic <code>0xBEEFFACE</code>) decoded down to individual field offsets, tiling formulas, and the activation lookup table; from-scratch emitters that produce byte-identical binaries and run at 98.8% of peak without Apple's compiler; the evaluation path traced through the framework's vtable to the kernel; the int8, geometry, dispatch-floor, TD-count, and compute/DMA-overlap measurements; and a 2,360-byte hardware parameter table pulled out of the live compiler with a debugger. Where we lean on someone else, it is named: Bryngelson's 302-page reference (A11 through M5, with the M1 compiler decompiled) supplies the compiler's internal pass names and the field naming for that parameter table, and the Orion paper catalogs MIL-level constraints for LLM work. Some numbers in Parts 1 and 2 were wrong; the corrections are marked inline.</p>
 <hr/>
 <h2>The Pipeline, End to End</h2>
-<p>One program, traced from text to silicon. Step through it: each stage draws what the compiler or the hardware does to the data at that point.</p>
+<p>One program, traced from text to silicon. Each stage below shows what the compiler or the hardware does to the data at that point.</p>
 <p><img alt="The ANE pipeline, one program traced from MIL text to hardware" src="https://maderix.github.io/articles/inside-the-m4-ane-part-4/substack/pipeline.gif"/></p><p><em>One program traced from text to silicon, stepping through the compiler, the binary, loading, and execution. The <a href="https://maderix.github.io/articles/inside-the-m4-ane-part-4/">interactive version</a> lets you step through each stage.</em></p>
 <h2>What the ANE Is</h2>
 <p>The Apple Neural Engine is a fixed-function matrix accelerator built into every Apple system-on-chip since the A11 (2017). It sits on the same die as the CPU and GPU, shares the same unified DRAM, and draws from the same power budget. Apple builds it in volume and documents almost none of it. There is no public instruction set, no driver interface, no way to confirm a computation ran on it. The public API is CoreML, where the engine is one placement option behind an opaque scheduler.</p>
@@ -23,7 +27,7 @@
 <blockquote><p><strong>Finding.</strong> One number, <code>HAT[0x1b8]</code> = 2 MiB per operand, decides whether the compiler keeps an operand resident or tiles and streams it.</p></blockquote>
 <h3>Compute</h3>
 <p>The M4 compute array has 8 compute sets. Each compute set has 8 accumulators. Products are fp16. The accumulator is wider than fp16 (its exact width was not measured), and the final output is rounded back to fp16. This means the ANE does not have native int8 multiply-accumulate. Int8 weights are dequantized to fp16 before the MACs fire. The "38 TOPS int8" marketing number counts each fp16 MAC as two int8 operations.</p>
-<p>The M1 had 4 compute sets. The doubling to 8 on M4 is consistent with the ~1.6x throughput increase between generations (M1: ~12 TFLOPS, M4: ~19 TFLOPS). The remaining gap may come from higher clock frequency on M4, but the ANE frequency has not been measured directly on either chip.</p>
+<p>Eight compute sets is what the HAT reports at offset <code>0x238</code>. The IORegistry reports 16 cores for the same device. These are different units of organization, and the mapping from a compiler compute set to a physical core is not exposed anywhere we could read. The ANE clock frequency has not been measured directly either.</p>
 <p>The compiler controls the output-channel-group (OCG) size, meaning how many output channels are computed in one pass through the accumulator. The OCG is the smaller of a power-of-two accumulator budget and a format-specific byte cap (32, 16, or 8 bytes depending on weight format). The formula and its constants come straight from the HAT (byte caps at <code>0x388</code>–<code>0x398</code>, per-accumulator tiers at <code>0x3a8</code>–<code>0x3c0</code>).</p>
 <blockquote><p><strong>Finding.</strong> The multipliers are fp16. Int8 is dequantized before them, so "38 TOPS" is 19 TFLOPS counted twice. The array is 8 compute sets × 8 accumulators; the per-cycle lane width is not in the table.</p></blockquote>
 <h3>DMA</h3>
@@ -32,6 +36,7 @@
 <blockquote><p><strong>Finding.</strong> Fusion is the compiler's biggest lever: <code>DMA_INTER</code> keeps intermediates in SRAM. matmul + bias + relu fused runs 5.7× faster than the same three ops dispatched one at a time.</p></blockquote>
 <h2>What the ANE Computes</h2>
 <p>The ANE supports approximately 50 hardware layer types, verified through the <code>ANECompiler.framework</code> validator exports (<code>_ANECValidate*Layer</code>). In practice, the operations that compile and execute fall into five groups.</p>
+
 <table>
 <tr><th>Group</th><th>Operations</th></tr>
 <tr><td><strong>Matrix ops</strong></td><td>matmul, conv (1x1/3x3/5x5), depthwise conv, SDPA (fused attention)</td></tr>
@@ -40,6 +45,7 @@
 <tr><td><strong>Reductions</strong></td><td>reduce_sum, reduce_mean, reduce_max (native hardware, not conv trick), softmax and layer_norm (decomposed into 6-7 fused primitives)</td></tr>
 <tr><td><strong>Layout</strong></td><td>reshape, transpose, concat, space_to_depth, depth_to_space, slice</td></tr>
 </table>
+
 <p>Operations not supported on the hardware: <code>acos</code>, <code>asin</code>, <code>tan</code>, <code>log</code>, <code>cumsum</code>, <code>mod</code>, and boolean logical ops. These fall back to the CPU (via BNNS) or GPU (via Metal). CoreML handles the segmentation automatically.</p>
 <p>Activations like sigmoid and gelu do not have dedicated hardware. Instead, the compiler stores 33 fp16 samples in a segment called <code>__KERN_0</code> and the hardware linearly interpolates between them at evaluation time. For sigmoid with samples from -8 to +8, the max error is 2.4e-4. We verified that replacing the samples with an arbitrary function (x³, not a MIL op) produces correct output on hardware. Any pointwise function approximable by 33 piecewise-linear segments over a fixed domain can run on the ANE.</p>
 <h2>How Programs Reach the Hardware</h2>
@@ -60,6 +66,7 @@
 </blockquote>
 <h3>Throughput</h3>
 <p>Peak throughput requires deep operation chains (32-64 layers) at the right channel/spatial balance (512-1024 channels, 64²-128² spatial). A single matmul uses roughly 30% of peak because the 8-core pipeline is not fully occupied. A 64-layer conv1x1 chain fills the pipeline and reaches 98.8%.</p>
+
 <table>
 <tr><th>Configuration</th><th>FP16 TFLOPS</th><th>W8A8 TOPS</th><th>% of ceiling</th></tr>
 <tr><td>Single matmul 1024×1024</td><td>5.2</td><td></td><td>27%</td></tr>
@@ -68,41 +75,49 @@
 <tr><td>64L conv1x1 512ch 128²</td><td><strong>18.77</strong></td><td>35.58</td><td><strong>98.8%</strong></td></tr>
 <tr><td>48L conv1x1 1024ch 64²</td><td>18.45</td><td><strong>36.01</strong></td><td>94.8% (W8A8)</td></tr>
 </table>
+
 <p><img alt="One matmul, however large, leaves two thirds of the array idle. A chain of 32 or more conv1x1 layers at 512–1024 channels fills the pipeline and runs within 1.2% of the ceiling." src="https://maderix.github.io/articles/inside-the-m4-ane-part-4/substack/throughput.png"/></p><p><em>One matmul, however large, leaves two thirds of the array idle. A chain of 32 or more conv1x1 layers at 512–1024 channels fills the pipeline and runs within 1.2% of the ceiling.</em></p>
 <p>The hardware ceiling is 19 TFLOPS fp16. Apple markets the ANE as "38 TOPS" by counting each fp16 MAC as two int8 operations.</p>
 <h3>INT8: activations, not weights</h3>
 <blockquote>
 <p><strong>Correction from Part 2:</strong> Part 2 reported that int8 quantized models run at the same throughput as fp16 and concluded the ANE dequantizes int8 to fp16. This is half right. Int8 <em>weights</em> buy nothing (1.00x). The speedup comes from int8 <em>activations</em>, controlled by a single DMA configuration bit that tells the engine to move inter-tile data as 1 byte instead of 2. Int8 activation quantization gives 1.85x throughput.</p>
 </blockquote>
+
 <table>
 <tr><th>Weights</th><th>Activations</th><th>Speedup</th></tr>
 <tr><td>fp16</td><td>fp16</td><td>baseline</td></tr>
 <tr><td>int8</td><td>fp16</td><td>1.00x</td></tr>
 <tr><td>int8</td><td>int8</td><td>1.85x</td></tr>
 </table>
+
 <p><img alt="Quantizing the weights alone changes nothing the multiplier can see. Quantizing the activations halves every transfer between tiles, and on a 128-layer chain that is the whole 1.85×." src="https://maderix.github.io/articles/inside-the-m4-ane-part-4/substack/int8.png"/></p><p><em>Quantizing the weights alone changes nothing the multiplier can see. Quantizing the activations halves every transfer between tiles, and on a 128-layer chain that is the whole 1.85×.</em></p>
 <blockquote><p><strong>Finding.</strong> Int8 weights: 1.00×. Int8 activations: 1.85×. The speedup is one DMA bit that halves inter-tile traffic; the MACs never see int8.</p></blockquote>
 <h3>Power and efficiency</h3>
+
 <table>
 <tr><th>State</th><th>Throughput</th><th>ANE Power</th><th>Efficiency</th></tr>
 <tr><td>Idle</td><td>0</td><td>0 mW</td><td>Hard power gate</td></tr>
 <tr><td>FP16 peak</td><td>18.77 TFLOPS</td><td>4.57 W</td><td>4.1 TFLOPS/W</td></tr>
 <tr><td>W8A8 peak</td><td>36.01 TOPS</td><td>12.25 W</td><td>2.9 TOPS/W</td></tr>
 </table>
+
 <p>The ANE has hard power gating: exactly 0 mW at idle, instant on. FP16 is the more power-efficient mode per operation. W8A8 draws 2.7x the power for 1.9x the throughput. Int8 activations buy throughput and SRAM footprint, not energy efficiency.</p>
 <h3>Geometry matters</h3>
 <p>A shallow-channel tensor starves the compute array. Reshaping with SpaceToDepth into the 512-1024 channel band, computing there, and reshaping back with DepthToSpace is the biggest performance lever available:</p>
+
 <table>
 <tr><th>Pipeline (32 layers)</th><th>FP16 TFLOPS</th><th>W8A8 TOPS</th></tr>
 <tr><td>Native 64ch 128²</td><td>3.92</td><td>6.62</td></tr>
 <tr><td>S2D(4) → 1024ch 32² → D2S</td><td><strong>16.37</strong></td><td><strong>31.97</strong></td></tr>
 <tr><td>Speedup</td><td>4.18x</td><td>4.83x</td></tr>
 </table>
+
 <p><img alt="The array parallelizes over output channels. A shallow tensor leaves most compute sets idle regardless of how large its spatial extent is; folding spatial into channels with SpaceToDepth is the single biggest lever we found." src="https://maderix.github.io/articles/inside-the-m4-ane-part-4/substack/s2d.png"/></p><p><em>The array parallelizes over output channels. A shallow tensor leaves most compute sets idle regardless of how large its spatial extent is; folding spatial into channels with SpaceToDepth is the single biggest lever we found.</em></p>
 <p>S2D/D2S overhead is 0.3-1.4% of the pipeline. Avoid block_size=2: the compiler lowers it as a convolution with one-hot weights (2.8-3.1% overhead) rather than a DMA reshuffle.</p>
 <blockquote><p><strong>Finding.</strong> The array parallelizes over channels. SpaceToDepth(4) on a 64-channel tensor lifted a 32-layer chain from 3.92 to 16.37 TFLOPS, 4.18× end to end.</p></blockquote>
 <h2>ANE vs GPU vs CPU</h2>
 <p>The three engines on an M4 serve different roles. None replaces the others.</p>
+
 <table>
 <tr><th></th><th>ANE</th><th>GPU (Metal)</th><th>CPU (SME)</th></tr>
 <tr><td><strong>Peak throughput</strong></td><td>19 TFLOPS fp16</td><td>~3.6 TFLOPS fp16</td><td>3.9 TOPS int8</td></tr>
@@ -112,6 +127,7 @@
 <tr><td><strong>Flexibility</strong></td><td>Fixed op set</td><td>Arbitrary compute</td><td>Arbitrary code</td></tr>
 <tr><td><strong>I/O</strong></td><td>IOSurface</td><td>MTLBuffer</td><td>Stack/heap</td></tr>
 </table>
+
 <p>For supported operations at batch sizes large enough to amortize the 90 µs dispatch, the ANE is 5x faster than the GPU and 8-13x more power-efficient than the CPU. The GPU wins on flexibility and zero dispatch overhead for in-flight work. The CPU wins on arbitrary code and instant dispatch.</p>
 <p><img alt="A model, not a measurement, except for its two inputs: the ≈90 µs floor measured on M4 and the ≈4.9× peak ratio between the ANE and the CPU's matrix unit. Anything shorter than ~23 µs of ANE work is faster on the CPU; anything longer belongs on the ANE, and fusing ops into one program moves work rightward." src="https://maderix.github.io/articles/inside-the-m4-ane-part-4/substack/crossover.png"/></p><p><em>A model, not a measurement, except for its two inputs: the ≈90 µs floor measured on M4 and the ≈4.9× peak ratio between the ANE and the CPU's matrix unit. Anything shorter than ~23 µs of ANE work is faster on the CPU; anything longer belongs on the ANE, and fusing ops into one program moves work rightward.</em></p>
 <p>For LLM inference, the practical split is: ANE for prefill (large-batch matrix operations, tiled as convolutions), CPU/SME for token-by-token decode (single-token operations where the 90 µs dispatch dominates). For on-device training, the ANE handles forward and backward matmuls at 2.8-4.6 W while the CPU handles weight updates and operations the ANE does not support (masked attention, Adam optimizer).</p>
@@ -131,7 +147,7 @@
 <p><strong>No wide issue.</strong> Eight independent adds were 1.008x faster than eight chained adds. The engine does not execute independent operations in parallel across compute sets in the configurations we tested. The compiler allows one MAC operation and one planar-engine operation to co-issue when they are independent; same-engine overlap is rejected.</p>
 <p><strong>No FP8.</strong> The E4M3 capability gate in the HAT is zero. The compute path is fp16.</p>
 <p><strong>No branching.</strong> The ANE has no conditional execution. Every operation in a compiled graph runs every time. Dynamic shapes are supported only through procedure indices (selecting among pre-compiled shapes) or runtime-variable dimension bindings in the dispatch descriptor.</p>
-<p><strong>Unknown lane width.</strong> The M1 paper reports 4 fp16 or 8 int8 output channels per cycle. The M4 HAT carries the same per-accumulator tier values (8/4/2/1) but these are tiling-formula inputs, not the per-cycle rate itself. The M4 per-cycle lane width has not been independently measured.</p>
+<p><strong>Unknown lane width.</strong> The HAT carries per-accumulator tier values (8/4/2/1), but those are inputs to the tiling formula, not the per-cycle rate. How many output channels the array produces per cycle has not been measured.</p>
 <hr/>
 <p>The M4 ANE is a fixed-function fp16 matrix accelerator with 8 compute sets, 64 banks of on-chip SRAM, and a compiler-managed streaming model that tiles work around a 2 MiB per-operand budget. It reaches 19 TFLOPS fp16 at under 5 watts and draws exactly 0 mW when idle. Its constraints (no branching, fixed op set, fp16-only MACs, 90 µs dispatch floor) are the price of that efficiency. The hardware is not complicated. The complexity is in the software stack above it, which Apple chose to keep private.</p>
 <p>The M6 doubles the engine count. Whether that is two independent accelerators or a coordinated pair remains to be measured.</p>
@@ -145,4 +161,5 @@
 <li>Dougall Johnson. <em>Apple G13 GPU Architecture.</em> <a href="https://github.com/dougallj/applegpu">github.com/dougallj/applegpu</a>, 2021-present.</li>
 <li>Apple Inc. <em>Apple introduces M6 and M5 Ultra for a big leap in performance and AI compute.</em> August 25, 2026. <a href="https://www.apple.com/newsroom/2026/08/apple-introduces-m6-and-m5-ultra-for-a-big-leap-in-performance-and-ai-compute/">apple.com/newsroom</a></li>
 </ol>
+
 </body></html>
