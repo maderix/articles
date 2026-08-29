@@ -1,0 +1,988 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Inside the M4 Apple Neural Engine, Part 4: the complete machine.">
+<title>Inside the M4 ANE, Part 4</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;0,8..60,700;1,8..60,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+
+<style>
+  :root {
+    --bg: #fafaf8; --fg: #1a1a18; --fg-secondary: #5c5c58; --fg-muted: #8a8a84;
+    --accent: #c45230; --surface: #f0efec; --border: #d8d7d3;
+    --code-bg: #eeedea; --code-fg: #2d2d2a; --table-stripe: #f5f4f1;
+    --diagram-bg: #f5f4f1; --diagram-stroke: #3a3a36; --diagram-fill: #e8e7e3;
+    --diagram-accent: #c45230;
+    --grp-a: #4a7a6a; --grp-b: #5a6a9a; --grp-c: #8a6a4a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #1a1a18; --fg: #e4e4df; --fg-secondary: #a8a8a2; --fg-muted: #6e6e68;
+      --accent: #e07050; --surface: #242422; --border: #3a3a36;
+      --code-bg: #2a2a26; --code-fg: #d4d4cf; --table-stripe: #222220;
+      --diagram-bg: #242422; --diagram-stroke: #b0b0a8; --diagram-fill: #2e2e2a;
+      --diagram-accent: #e07050;
+      --grp-a: #6aaa8a; --grp-b: #7a8aba; --grp-c: #ba9a6a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #1a1a18; --fg: #e4e4df; --fg-secondary: #a8a8a2; --fg-muted: #6e6e68;
+    --accent: #e07050; --surface: #242422; --border: #3a3a36;
+    --code-bg: #2a2a26; --code-fg: #d4d4cf; --table-stripe: #222220;
+    --diagram-bg: #242422; --diagram-stroke: #b0b0a8; --diagram-fill: #2e2e2a;
+    --diagram-accent: #e07050;
+    --grp-a: #6aaa8a; --grp-b: #7a8aba; --grp-c: #ba9a6a;
+  }
+  body { background: var(--bg); color: var(--fg); font-family: 'Source Serif 4', Georgia, 'Times New Roman', serif; font-size: clamp(17px, 0.5vw + 12px, 19px); line-height: 1.6; margin: 0; padding: 0; }
+  .article { width: calc(100% - 48px); max-width: 1100px; margin: 0 auto; padding: 32px 0 64px; }
+  .article > figure { width: 100%; max-width: 860px; margin-left: auto; margin-right: auto; }
+  .article > .pipe { width: 100%; max-width: 1000px; margin-left: auto; margin-right: auto; }
+  .article > .table-wrap, .article > pre { width: 100%; } }
+  .series-label { font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); margin-bottom: 12px; }
+  h1 { font-family: 'Source Serif 4', Georgia, serif; font-size: 36px; font-weight: 700; line-height: 1.2; color: var(--fg); margin: 0 0 8px; text-wrap: balance; }
+  .subtitle { font-size: 19px; font-style: italic; color: var(--fg-secondary); margin-bottom: 20px; line-height: 1.5; }
+  .byline { font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: var(--fg-muted); margin-bottom: 28px; padding-bottom: 16px; border-bottom: 1px solid var(--border); }
+  h2 { font-family: 'Source Serif 4', Georgia, serif; font-size: 24px; font-weight: 600; margin: 36px 0 12px; color: var(--fg); text-wrap: balance; }
+  h3 { font-family: 'Source Serif 4', Georgia, serif; font-size: 20px; font-weight: 600; margin: 24px 0 10px; color: var(--fg); }
+  p { margin: 0 0 14px; }
+  a { color: var(--accent); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  code { font-family: 'IBM Plex Mono', monospace; font-size: 0.85em; background: var(--code-bg); color: var(--code-fg); padding: 2px 5px; border-radius: 3px; }
+  pre { background: var(--code-bg); color: var(--code-fg); font-family: 'IBM Plex Mono', monospace; font-size: 13.5px; line-height: 1.55; padding: 14px 18px; border-radius: 4px; overflow-x: auto; margin: 0 0 18px; border: 1px solid var(--border); }
+  pre code { background: none; padding: 0; font-size: inherit; }
+  table { width: 100%; border-collapse: collapse; font-size: 15px; margin: 0 0 24px; font-variant-numeric: tabular-nums; }
+  th { font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; text-align: left; padding: 8px 12px; border-bottom: 2px solid var(--border); color: var(--fg-secondary); }
+  td { padding: 7px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr:nth-child(even) td { background: var(--table-stripe); }
+  .table-wrap { overflow-x: auto; margin-bottom: 18px; }
+  figure { margin-top: 20px; margin-bottom: 24px; }
+  figcaption { font-size: 14px; color: var(--fg-muted); margin-top: 10px; font-style: italic; line-height: 1.5; }
+  figure svg { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+  hr { border: none; border-top: 1px solid var(--border); margin: 32px 0; }
+  strong { font-weight: 600; }
+  .correction { background: var(--surface); border-left: 3px solid var(--accent); padding: 12px 16px; margin: 16px 0; border-radius: 0 4px 4px 0; font-size: 16px; }
+  .correction p:last-child { margin-bottom: 0; }
+  .ref-list { font-size: 15px; line-height: 1.6; }
+  .ref-list li { margin-bottom: 8px; }
+  @media (max-width: 600px) { h1 { font-size: 28px; } .article { width: calc(100% - 28px); padding: 24px 0 48px; } pre { font-size: 12px; padding: 14px 16px; } }
+
+  /* Interactive pipeline diagram */
+  /* The diagram is 900 units wide; let it break out of the 680px text column so
+     text renders near 1:1 on desktop. On narrow screens it shrinks to the viewport. */
+  .pipe { margin-top: 20px; margin-bottom: 28px; }
+  .pipe-ctl { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-family: 'IBM Plex Mono', monospace; font-size: 12px; }
+  .pipe-ctl button {
+    font-family: inherit; font-size: 12px; padding: 5px 12px; border-radius: 3px; cursor: pointer;
+    background: var(--surface); color: var(--fg); border: 1px solid var(--border);
+  }
+  .pipe-ctl button:hover, .pipe-ctl button:focus-visible { border-color: var(--accent); outline: none; }
+  .pipe-ctl button[disabled] { opacity: .4; cursor: default; }
+  .pipe-ctl .pipe-pos { margin-left: auto; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+  .pipe-ctl .dots { display: flex; gap: 4px; }
+  .pipe-ctl .dots i { width: 8px; height: 8px; border-radius: 50%; background: var(--border); display: block; cursor: pointer; }
+  .pipe-ctl .dots i.on { background: var(--accent); }
+  .pipe-ctl .dots i.done { background: var(--fg-muted); }
+  .pipe svg { width: 100%; height: auto; display: block; background: var(--diagram-bg); border-radius: 4px; border: 1px solid var(--border); }
+  .pipe svg text { font-family: 'IBM Plex Mono', monospace; fill: currentColor; }
+  .pipe .st { opacity: .32; transition: opacity .25s; }
+  .pipe .st.done { opacity: .72; }
+  .pipe .st.on { opacity: 1; }
+  .pipe .st.on .frame { stroke: var(--accent); stroke-width: 1.5; }
+  .pipe [data-from], .pipe [data-until] { transition: opacity .2s; }
+  .pipe .lit { fill: var(--accent); fill-opacity: .75; }
+  .pipe .lit2 { fill: var(--accent); fill-opacity: .35; }
+  .pipe .flow { stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 5 4; animation: pipeflow 1s linear infinite; }
+  @keyframes pipeflow { to { stroke-dashoffset: -18; } }
+  @media (prefers-reduced-motion: reduce) { .pipe .flow { animation: none; } .pipe .st { transition: none; } }
+  .pipe-cap {
+    margin-top: 10px; padding: 12px 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 4px;
+    font-size: 15px; line-height: 1.55; min-height: 74px;
+  }
+  .pipe-cap .cap-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; font-family: 'IBM Plex Mono', monospace; }
+  .pipe-cap .cap-title { font-size: 13px; font-weight: 500; color: var(--accent); }
+  .pipe-cap .ev { font-size: 9px; padding: 2px 6px; border-radius: 2px; letter-spacing: .04em; border: 1px solid; }
+  .pipe-cap .ev.m4 { color: var(--grp-a); border-color: var(--grp-a); }
+  .pipe-cap .ev.m1 { color: var(--grp-c); border-color: var(--grp-c); }
+  .pipe-cap p { margin: 0; }
+  .pipe-cap code { font-size: .82em; }
+
+  /* chart tokens + hover tooltip */
+  :root { --chart-a: #c45230; --chart-b: #3a6fc0; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --chart-a: #e07050; --chart-b: #5f88e0; } }
+  :root[data-theme="dark"] { --chart-a: #e07050; --chart-b: #5f88e0; }
+  figure svg text { font-family: 'IBM Plex Mono', monospace; }
+  .fig-tip { position: fixed; pointer-events: none; z-index: 10; padding: 6px 9px; font: 12px/1.4 'IBM Plex Mono', monospace;
+    background: var(--fg); color: var(--bg); border-radius: 3px; opacity: 0; transition: opacity .12s; white-space: nowrap; }
+  .fig-tip.show { opacity: 1; }
+  [data-tip] { cursor: default; }
+  .bar { transition: fill-opacity .15s; }
+  .bar:hover { fill-opacity: 1; }
+
+  /* ---- readability pass: section rhythm, hierarchy, key findings ---- */
+  .article { counter-reset: sec; }
+  h2 { position: relative; padding-top: 18px; margin-top: 44px; border-top: 2px solid var(--accent); font-size: 26px; }
+  h2::before { counter-increment: sec; content: "§ " counter(sec, decimal-leading-zero); display: block;
+    font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 500; letter-spacing: .12em; color: var(--accent); margin-bottom: 6px; }
+  h2.plain { counter-increment: none; } h2.plain::before { content: none; }
+  h3 { border-left: 3px solid var(--accent); padding-left: 10px; margin-top: 28px; color: var(--fg); }
+  h2 + p { font-size: 1.06em; color: var(--fg); }
+  p { color: color-mix(in srgb, var(--fg) 88%, var(--bg)); }
+  strong { color: var(--fg); }
+  code { color: color-mix(in srgb, var(--accent) 72%, var(--fg)); }
+  pre code { color: var(--code-fg); }
+  th { background: var(--surface); }
+  .key { display: grid; grid-template-columns: auto 1fr; gap: 12px; align-items: baseline;
+    background: color-mix(in srgb, var(--accent) 9%, var(--bg)); border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--bg));
+    border-radius: 4px; padding: 11px 14px; margin: 18px 0 22px; font-size: 16px; color: var(--fg); }
+  .key b { font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; letter-spacing: .12em; color: var(--accent); font-weight: 500; }
+  figcaption { color: color-mix(in srgb, var(--fg) 62%, var(--bg)); }
+  .correction { border-color: var(--grp-b); background: color-mix(in srgb, var(--grp-b) 8%, var(--bg)); }
+  .correction strong { color: var(--grp-b); }
+</style>
+<style>body{margin:0}</style>
+</head>
+<body>
+<article class="article">
+
+<div class="series-label">Inside the M4 Apple Neural Engine · Part 4</div>
+
+<h1>The Complete Machine</h1>
+
+<p class="subtitle">What the M4 Neural Engine is, how it is built, what it can do, and where it stops</p>
+
+<div class="byline">manjeet singh · August 2026</div>
+
+<p>Parts <a href="https://maderix.substack.com/p/inside-the-m4-apple-neural-engine">1</a>, <a href="https://maderix.substack.com/p/inside-the-m4-apple-neural-engine-615">2</a>, and <a href="https://maderix.substack.com/p/inside-the-m4-apple-neural-engine-c8b">3</a> of this series treated the ANE as a tool. We compiled models to it, measured how fast they ran, and trained a transformer on it. But we never described the machine itself. What is the ANE as a piece of silicon? How is it organized? What can it compute, and why does it behave the way we measured?</p>
+
+<p>Most of what follows is our own reverse engineering on an M4, done across Parts 1–3 and the months since: the private API surface below CoreML and the in-memory compile path; the compiled program format (a Mach-O with magic <code>0xBEEFFACE</code>) decoded down to individual field offsets, tiling formulas, and the activation lookup table; from-scratch emitters that produce byte-identical binaries and run at 98.8% of peak without Apple's compiler; the evaluation path traced through the framework's vtable to the kernel; the int8, geometry, dispatch-floor, TD-count, and compute/DMA-overlap measurements; and a 2,360-byte hardware parameter table pulled out of the live compiler with a debugger. Where we lean on someone else, it is named: Bryngelson's 302-page reference (A11 through M5, with the M1 compiler decompiled) supplies the compiler's internal pass names and the field naming for that parameter table, and the Orion paper catalogs MIL-level constraints for LLM work. Some numbers in Parts 1 and 2 were wrong; the corrections are marked inline.</p>
+
+<hr>
+
+<h2>The Pipeline, End to End</h2>
+
+<p>One program, traced from text to silicon. Step through it: each stage draws what the compiler or the hardware does to the data at that point.</p>
+
+<div class="pipe" id="pipe">
+  <div class="pipe-ctl">
+    <button type="button" id="pipe-prev">◀ Prev</button>
+    <button type="button" id="pipe-next">Next ▶</button>
+    <button type="button" id="pipe-play">Play</button>
+    <div class="dots" id="pipe-dots"></div>
+    <span class="pipe-pos" id="pipe-pos">1 / 9</span>
+  </div>
+
+  <svg viewBox="0 0 900 690" role="img" aria-label="Interactive trace of one program from MIL text through the ANE compiler, the HWX binary, loading, and hardware execution">
+    <defs>
+      <marker id="pa" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><polygon points="0,0 7,3.5 0,7" fill="var(--diagram-stroke)"/></marker>
+      <marker id="pb" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><polygon points="0,0 7,3.5 0,7" fill="var(--accent)"/></marker>
+    </defs>
+
+    <!-- ================================================================
+         Layout: three horizontal bands in a 900×690 viewBox.
+           A (y 20–190)  COMPILE  – six panels, one per compiler stage
+           B (y 226–300) LOAD     – aned cache → IOKit → DART → DRAM
+           C (y 316–672) HARDWARE – DRAM, DMA engines, SRAM, MAC array, output
+         Each stage is a <g class="st" id="sN">. The stepper adds .on / .done.
+         Elements tagged data-from="N" appear from step N onward;
+         data-until="N" disappear at step N. Steps: 0 MIL, 1 validate,
+         2 fuse, 3 legalize, 4 schedule, 5 memory, 6 hwx, 7 load, 8 execute.
+         Banks, SRAM cells, weight chunks and compute sets are generated in JS.
+         ================================================================ -->
+    <!-- ===== BAND A: COMPILE ===== -->
+    <text x="20" y="20" font-size="11" fill="var(--fg-muted)" letter-spacing="1.5">COMPILE · ANECompiler.framework</text>
+
+    <!-- S0 MIL -->
+    <g class="st" id="s0">
+      <rect class="frame" x="20" y="40" width="112" height="150" rx="3" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/>
+      <text x="76" y="56" text-anchor="middle" font-size="13" font-weight="500">model.mil</text>
+      <text x="28" y="74" font-size="10.5" fill="var(--fg-secondary)">program(1.3)</text>
+      <text x="28" y="86" font-size="10.5" fill="var(--fg-secondary)">func main&lt;ios18&gt;</text>
+      <text x="28" y="98" font-size="10.5" fill="var(--fg-secondary)">x: fp16[512×256]</text>
+      <text x="28" y="116" font-size="10.5">y1 = conv(x, W)</text>
+      <text x="28" y="130" font-size="10.5">y2 = add(y1, b)</text>
+      <text x="28" y="144" font-size="10.5">y  = relu(y2)</text>
+      <text x="28" y="164" font-size="10.5" fill="var(--fg-secondary)">-&gt; (y)</text>
+      <text x="76" y="182" text-anchor="middle" font-size="10" fill="var(--fg-muted)">typed SSA · 3 ops</text>
+    </g>
+    <line x1="134" y1="115" x2="158" y2="115" stroke="var(--diagram-stroke)" marker-end="url(#pa)"/>
+
+    <!-- S1 validate + S2 fuse share the graph panel: the unfused graph is shown
+         until step 2, validator ticks only at step 1, the fused layer from step 2 -->
+    <g class="st" id="s1">
+      <rect class="frame" x="160" y="40" width="130" height="150" rx="3" fill="none" stroke="var(--diagram-stroke)"/>
+      <text x="225" y="56" text-anchor="middle" font-size="13" font-weight="500">op graph</text>
+      <!-- unfused: shown until step 2 -->
+      <g data-until="2">
+        <rect x="180" y="66" width="90" height="22" rx="2" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/>
+        <text x="225" y="81" text-anchor="middle" font-size="11">conv 1×1</text>
+        <line x1="225" y1="88" x2="225" y2="104" stroke="var(--diagram-stroke)" marker-end="url(#pa)"/>
+        <rect x="180" y="106" width="90" height="22" rx="2" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/>
+        <text x="225" y="121" text-anchor="middle" font-size="11">add bias</text>
+        <line x1="225" y1="128" x2="225" y2="144" stroke="var(--diagram-stroke)" marker-end="url(#pa)"/>
+        <rect x="180" y="146" width="90" height="22" rx="2" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/>
+        <text x="225" y="161" text-anchor="middle" font-size="11">relu</text>
+      </g>
+      <!-- validator ticks: step 1 only -->
+      <g data-from="1" data-until="2">
+        <circle cx="278" cy="77" r="6" fill="var(--grp-a)"/><text x="278" y="80" text-anchor="middle" font-size="10" fill="#fff">✓</text>
+        <circle cx="278" cy="117" r="6" fill="var(--grp-a)"/><text x="278" y="120" text-anchor="middle" font-size="10" fill="#fff">✓</text>
+        <circle cx="278" cy="157" r="6" fill="var(--grp-a)"/><text x="278" y="160" text-anchor="middle" font-size="10" fill="#fff">✓</text>
+        <text x="225" y="184" text-anchor="middle" font-size="10" fill="var(--grp-a)">3/3 validators pass</text>
+      </g>
+      <!-- fused: from step 2 -->
+      <g data-from="2">
+        <rect x="164" y="88" width="122" height="50" rx="3" fill="var(--accent)" fill-opacity=".14" stroke="var(--accent)"/>
+        <text x="225" y="107" text-anchor="middle" font-size="10.5" font-weight="500">conv + bias + relu</text>
+        <text x="225" y="121" text-anchor="middle" font-size="10" fill="var(--fg-secondary)">ZinNEBypassLayer</text>
+        <text x="225" y="132" text-anchor="middle" font-size="10" fill="var(--fg-secondary)">1 engine layer</text>
+        <text x="225" y="184" text-anchor="middle" font-size="10" fill="var(--fg-muted)">3 ops → 1 layer</text>
+      </g>
+    </g>
+    <line x1="292" y1="115" x2="316" y2="115" stroke="var(--diagram-stroke)" marker-end="url(#pa)"/>
+
+    <!-- S3 legalize -->
+    <g class="st" id="s3">
+      <rect class="frame" x="318" y="40" width="126" height="150" rx="3" fill="none" stroke="var(--diagram-stroke)"/>
+      <text x="381" y="56" text-anchor="middle" font-size="13" font-weight="500">legalize · tile</text>
+      <g data-until="3">
+        <rect x="332" y="66" width="98" height="104" rx="2" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/>
+        <text x="381" y="112" text-anchor="middle" font-size="11">operand</text>
+        <text x="381" y="126" text-anchor="middle" font-size="11">4 MiB</text>
+      </g>
+      <g data-from="3">
+        <rect x="332" y="66" width="98" height="48" rx="2" fill="var(--grp-b)" fill-opacity=".18" stroke="var(--grp-b)"/>
+        <text x="381" y="94" text-anchor="middle" font-size="11">tile 0 · 2 MiB</text>
+        <rect x="332" y="122" width="98" height="48" rx="2" fill="var(--grp-b)" fill-opacity=".18" stroke="var(--grp-b)"/>
+        <text x="381" y="150" text-anchor="middle" font-size="11">tile 1 · 2 MiB</text>
+      </g>
+      <line x1="326" y1="118" x2="436" y2="118" stroke="var(--accent)" stroke-dasharray="3 3"/>
+      <text x="381" y="184" text-anchor="middle" font-size="10" fill="var(--fg-muted)">HAT[0x1b8] = 2 MiB</text>
+    </g>
+    <line x1="446" y1="115" x2="470" y2="115" stroke="var(--diagram-stroke)" marker-end="url(#pa)"/>
+
+    <!-- S4 schedule -->
+    <g class="st" id="s4">
+      <rect class="frame" x="472" y="40" width="130" height="150" rx="3" fill="none" stroke="var(--diagram-stroke)"/>
+      <text x="537" y="56" text-anchor="middle" font-size="13" font-weight="500">schedule · TDs</text>
+      <rect x="482" y="66" width="76" height="20" rx="2" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/><text x="520" y="80" text-anchor="middle" font-size="10.5">TD0 load A</text>
+      <rect x="482" y="92" width="76" height="20" rx="2" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/><text x="520" y="106" text-anchor="middle" font-size="10.5">TD1 conv</text>
+      <rect x="482" y="118" width="76" height="20" rx="2" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/><text x="520" y="132" text-anchor="middle" font-size="10.5">TD2 conv</text>
+      <rect x="482" y="144" width="76" height="20" rx="2" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/><text x="520" y="158" text-anchor="middle" font-size="10.5">TD3 store</text>
+      <g data-from="4">
+        <rect x="482" y="66" width="76" height="20" rx="2" class="lit2"/>
+        <rect x="482" y="92" width="76" height="20" rx="2" class="lit2"/>
+        <rect x="482" y="118" width="76" height="20" rx="2" class="lit2"/>
+        <rect x="482" y="144" width="76" height="20" rx="2" class="lit2"/>
+      </g>
+      <!-- L2 pressure gauge: the accent line is HAT[0x1b8] (2 MiB); the fill
+           appears at step 4 sitting just under it -->
+      <rect x="570" y="66" width="18" height="98" fill="none" stroke="var(--diagram-stroke)"/>
+      <line x1="566" y1="78" x2="592" y2="78" stroke="var(--accent)"/>
+      <text x="592" y="81" text-anchor="start" font-size="9" fill="var(--accent)">2 MiB</text>
+      <g data-from="4"><rect x="571" y="96" width="16" height="67" class="lit"/></g>
+      <text x="579" y="62" text-anchor="middle" font-size="9" fill="var(--fg-muted)">L2</text>
+      <text x="537" y="184" text-anchor="middle" font-size="10" fill="var(--fg-muted)">cut at 2 MiB peak</text>
+    </g>
+    <line x1="604" y1="115" x2="628" y2="115" stroke="var(--diagram-stroke)" marker-end="url(#pa)"/>
+
+    <!-- S5 memory / banks -->
+    <g class="st" id="s5">
+      <rect class="frame" x="630" y="40" width="118" height="150" rx="3" fill="none" stroke="var(--diagram-stroke)"/>
+      <text x="689" y="56" text-anchor="middle" font-size="13" font-weight="500">bank layout</text>
+      <g id="bankgrid" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"></g>
+      <g data-from="5" id="bankstripe"></g>
+      <text x="689" y="172" text-anchor="middle" font-size="10" fill="var(--fg-muted)">⌊addr/16⌋ mod 64</text>
+      <text x="689" y="184" text-anchor="middle" font-size="10" fill="var(--fg-muted)">no bank conflicts</text>
+    </g>
+    <line x1="750" y1="115" x2="774" y2="115" stroke="var(--diagram-stroke)" marker-end="url(#pa)"/>
+
+    <!-- S6 HWX -->
+    <g class="st" id="s6">
+      <rect class="frame" x="776" y="40" width="108" height="150" rx="3" fill="none" stroke="var(--diagram-stroke)"/>
+      <text x="830" y="56" text-anchor="middle" font-size="13" font-weight="500">model.hwx</text>
+      <rect x="784" y="64" width="92" height="20" rx="2" fill="var(--accent)" fill-opacity=".18" stroke="var(--accent)"/><text x="830" y="77" text-anchor="middle" font-size="10">0xBEEFFACE</text>
+      <rect x="784" y="88" width="92" height="32" rx="2" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/><text x="830" y="101" text-anchor="middle" font-size="10">__TEXT</text><text x="830" y="114" text-anchor="middle" font-size="9" fill="var(--fg-secondary)">TD stream</text>
+      <rect x="784" y="124" width="92" height="30" rx="2" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/><text x="830" y="136" text-anchor="middle" font-size="10">__KERN_0</text><text x="830" y="148" text-anchor="middle" font-size="9" fill="var(--fg-secondary)">weights / LUT</text>
+      <rect x="784" y="158" width="92" height="30" rx="2" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/><text x="830" y="170" text-anchor="middle" font-size="10">__FVMLIB ×2</text><text x="830" y="182" text-anchor="middle" font-size="9" fill="var(--fg-secondary)">in / out desc</text>
+      
+    </g>
+
+    <!-- ===== BAND B: LOAD ===== -->
+    <text x="20" y="226" font-size="11" fill="var(--fg-muted)" letter-spacing="1.5">LOAD · aned + IOKit</text>
+    <g class="st" id="s7">
+      <path d="M 830 192 L 830 214 L 200 214 L 200 240" fill="none" stroke="var(--diagram-stroke)" marker-end="url(#pa)" id="p-hwx-cache"/>
+      <rect class="frame" x="60" y="242" width="160" height="46" rx="3" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/>
+      <text x="140" y="260" text-anchor="middle" font-size="12">aned cache</text>
+      <text x="140" y="274" text-anchor="middle" font-size="9.5" fill="var(--fg-secondary)">com.apple.aned/…/model.hwx</text>
+      <line x1="222" y1="265" x2="252" y2="265" stroke="var(--diagram-stroke)" marker-end="url(#pa)" id="p-cache-iokit"/>
+      <rect class="frame" x="254" y="242" width="130" height="46" rx="3" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/>
+      <text x="319" y="260" text-anchor="middle" font-size="12">IOKit</text>
+      <text x="319" y="274" text-anchor="middle" font-size="9.5" fill="var(--fg-secondary)">AppleH16ANEInterface</text>
+      <line x1="386" y1="265" x2="416" y2="265" stroke="var(--diagram-stroke)" marker-end="url(#pa)" id="p-iokit-dart"/>
+      <rect class="frame" x="418" y="242" width="150" height="46" rx="3" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/>
+      <text x="493" y="260" text-anchor="middle" font-size="12">DART</text>
+      <text x="493" y="274" text-anchor="middle" font-size="9.5" fill="var(--fg-secondary)">device VA · 16 KiB pages</text>
+      <rect x="610" y="242" width="230" height="46" rx="3" fill="none" stroke="var(--diagram-stroke)" stroke-dasharray="3 3"/>
+      <text x="725" y="260" text-anchor="middle" font-size="12">dispatch floor ≈ 90 µs</text>
+      <text x="725" y="274" text-anchor="middle" font-size="9.5" fill="var(--fg-secondary)">XPC round-trip, paid per evaluation</text>
+      <line x1="493" y1="290" x2="493" y2="322" stroke="var(--diagram-stroke)" marker-end="url(#pa)" id="p-dart-dram"/>
+    </g>
+
+    <!-- ===== BAND C: HARDWARE ===== -->
+    <text x="20" y="316" font-size="11" fill="var(--fg-muted)" letter-spacing="1.5">HARDWARE · H16G</text>
+    <g class="st" id="s8">
+      <rect x="60" y="326" width="780" height="30" rx="3" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/>
+      <text x="450" y="345" text-anchor="middle" font-size="13">Unified DRAM · 120 GB/s · input / output IOSurfaces · operands &gt; 2 MiB streamed</text>
+
+      <!-- DMA engines -->
+      <line x1="180" y1="356" x2="180" y2="380" stroke="var(--diagram-stroke)" marker-end="url(#pa)" class="dma"/>
+      <line x1="330" y1="356" x2="330" y2="380" stroke="var(--diagram-stroke)" marker-end="url(#pa)" class="dma"/>
+      <line x1="480" y1="356" x2="480" y2="380" stroke="var(--diagram-stroke)" marker-end="url(#pa)" class="dma"/>
+      <line x1="740" y1="356" x2="740" y2="380" stroke="var(--diagram-stroke)" marker-end="url(#pa)" class="dma"/>
+      <rect x="120" y="382" width="120" height="22" rx="2" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/><text x="180" y="397" text-anchor="middle" font-size="10.5">tile DMA 0</text>
+      <rect x="270" y="382" width="120" height="22" rx="2" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/><text x="330" y="397" text-anchor="middle" font-size="10.5">tile DMA 1</text>
+      <rect x="420" y="382" width="120" height="22" rx="2" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/><text x="480" y="397" text-anchor="middle" font-size="10.5">tile DMA 2</text>
+      <rect x="670" y="382" width="140" height="22" rx="2" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/><text x="740" y="397" text-anchor="middle" font-size="10">kernel DMA · 16 chunks</text>
+      <line x1="180" y1="404" x2="180" y2="420" stroke="var(--diagram-stroke)" marker-end="url(#pa)" class="dma"/>
+      <line x1="330" y1="404" x2="330" y2="420" stroke="var(--diagram-stroke)" marker-end="url(#pa)" class="dma"/>
+      <line x1="480" y1="404" x2="480" y2="420" stroke="var(--diagram-stroke)" marker-end="url(#pa)" class="dma"/>
+      <line x1="740" y1="404" x2="740" y2="420" stroke="var(--diagram-stroke)" marker-end="url(#pa)" class="dma"/>
+
+      <!-- SRAM -->
+      <rect x="60" y="422" width="570" height="112" rx="3" fill="var(--grp-a)" fill-opacity=".08" stroke="var(--grp-a)" stroke-width="1.2"/>
+      <text x="345" y="438" text-anchor="middle" font-size="12" font-weight="500">SRAM scratchpad · 64 banks · 16 B interleave · compiler-managed, no eviction</text>
+      <g id="sram" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"></g>
+      <g id="sramlit"></g>
+
+      <!-- weight store -->
+      <rect x="650" y="422" width="190" height="112" rx="3" fill="var(--grp-a)" fill-opacity=".08" stroke="var(--grp-a)" stroke-width="1.2"/>
+      <text x="745" y="438" text-anchor="middle" font-size="12" font-weight="500">weight store</text>
+      <text x="745" y="450" text-anchor="middle" font-size="9" fill="var(--fg-secondary)">64 KiB resident · 16 MiB streamed</text>
+      <g id="wstore" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"></g>
+      <g id="wstorelit"></g>
+
+      <!-- SRAM -> compute -->
+      <line x1="345" y1="534" x2="345" y2="552" stroke="var(--diagram-stroke)" marker-end="url(#pa)"/>
+      <line x1="745" y1="534" x2="745" y2="552" stroke="var(--diagram-stroke)" marker-end="url(#pa)"/>
+
+      <!-- compute -->
+      <rect x="60" y="554" width="570" height="62" rx="3" fill="var(--grp-b)" fill-opacity=".08" stroke="var(--grp-b)" stroke-width="1.2"/>
+      <text x="345" y="570" text-anchor="middle" font-size="12" font-weight="500">MAC array · 8 compute sets × 8 accumulators · fp16 products, wide accumulate</text>
+      <g id="cs"></g>
+      <rect x="650" y="554" width="190" height="62" rx="3" fill="var(--grp-b)" fill-opacity=".08" stroke="var(--grp-b)" stroke-width="1.2"/>
+      <text x="745" y="570" text-anchor="middle" font-size="12" font-weight="500">planar engine</text>
+      <text x="745" y="584" text-anchor="middle" font-size="9.5" fill="var(--fg-secondary)">ALU · 33-pt LUT · reduce</text>
+      <g data-from="8"><rect x="672" y="592" width="146" height="14" rx="2" class="lit2"/><text x="745" y="602" text-anchor="middle" font-size="9.5">relu via ALU (no LUT)</text></g>
+
+      <!-- output -->
+      <line x1="345" y1="616" x2="345" y2="634" stroke="var(--diagram-stroke)" marker-end="url(#pa)"/>
+      <rect x="230" y="636" width="230" height="36" rx="3" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" id="outbox"/>
+      <text x="345" y="651" text-anchor="middle" font-size="12">IOSurface output</text>
+      <text x="345" y="664" text-anchor="middle" font-size="9.5" fill="var(--fg-secondary)">zero-copy to CPU / GPU</text>
+      <g data-from="8"><rect x="230" y="636" width="230" height="36" rx="3" fill="none" stroke="var(--accent)" stroke-width="1.5"/></g>
+      <text x="590" y="655" font-size="10" fill="var(--fg-muted)">18.77 TFLOPS fp16 · 4.57 W · 0 mW idle</text>
+    </g>
+  </svg>
+
+  <div class="pipe-cap" id="pipe-cap" aria-live="polite">
+    <div class="cap-head"><span class="cap-title" id="cap-title"></span><span class="ev" id="cap-ev"></span></div>
+    <p id="cap-body"></p>
+  </div>
+</div>
+
+<h2>What the ANE Is</h2>
+
+<p>The Apple Neural Engine is a fixed-function matrix accelerator built into every Apple system-on-chip since the A11 (2017). It sits on the same die as the CPU and GPU, shares the same unified DRAM, and draws from the same power budget. Apple builds it in volume and documents almost none of it. There is no public instruction set, no driver interface, no way to confirm a computation ran on it. The public API is CoreML, where the engine is one placement option behind an opaque scheduler.</p>
+
+<figure>
+  <svg viewBox="0 0 640 300" role="img" aria-label="One M4 die: CPU, GPU and ANE each read and write the same IOSurface in unified DRAM; the ANE alone pays a 90 microsecond dispatch per call">
+    <rect x="0" y="0" width="640" height="300" fill="var(--diagram-bg)" rx="4"/>
+    <defs><marker id="f1a" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><polygon points="0,0 6,3 0,6" fill="var(--diagram-stroke)"/></marker></defs>
+    <text x="320" y="22" text-anchor="middle" font-size="11" font-weight="500" fill="currentColor">Apple M4 · one die (T8132) · one memory</text>
+
+    <!-- engines -->
+    <rect x="30" y="40" width="170" height="92" rx="3" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/>
+    <text x="115" y="60" text-anchor="middle" font-size="11" font-weight="500" fill="currentColor">CPU · 10 cores + SME</text>
+    <text x="42" y="80" text-anchor="start" font-size="10" fill="var(--fg-muted)">peak</text><text x="188" y="80" text-anchor="end" font-size="10" fill="currentColor">3.9 TOPS int8</text>
+    <text x="42" y="96" text-anchor="start" font-size="10" fill="var(--fg-muted)">power</text><text x="188" y="96" text-anchor="end" font-size="10" fill="currentColor">5–8 W</text>
+    <text x="42" y="112" text-anchor="start" font-size="10" fill="var(--fg-muted)">dispatch</text><text x="188" y="112" text-anchor="end" font-size="10" fill="currentColor">0 (inline)</text>
+    <text x="42" y="126" text-anchor="start" font-size="10" fill="var(--fg-muted)">runs</text><text x="188" y="126" text-anchor="end" font-size="10" fill="currentColor">any code</text>
+
+    <rect x="235" y="40" width="170" height="92" rx="3" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/>
+    <text x="320" y="60" text-anchor="middle" font-size="11" font-weight="500" fill="currentColor">GPU · 10 cores (Metal)</text>
+    <text x="247" y="80" text-anchor="start" font-size="10" fill="var(--fg-muted)">peak</text><text x="393" y="80" text-anchor="end" font-size="10" fill="currentColor">~3.6 TFLOPS fp16</text>
+    <text x="247" y="96" text-anchor="start" font-size="10" fill="var(--fg-muted)">power</text><text x="393" y="96" text-anchor="end" font-size="10" fill="currentColor">8–12 W</text>
+    <text x="247" y="112" text-anchor="start" font-size="10" fill="var(--fg-muted)">dispatch</text><text x="393" y="112" text-anchor="end" font-size="10" fill="currentColor">~0 (in-flight)</text>
+    <text x="247" y="126" text-anchor="start" font-size="10" fill="var(--fg-muted)">runs</text><text x="393" y="126" text-anchor="end" font-size="10" fill="currentColor">shaders</text>
+
+    <rect x="440" y="40" width="170" height="92" rx="3" fill="var(--accent)" fill-opacity=".12" stroke="var(--accent)" stroke-width="1.5"/>
+    <text x="525" y="60" text-anchor="middle" font-size="11" font-weight="500" fill="currentColor">ANE · 16 cores (H16G)</text>
+    <text x="452" y="80" text-anchor="start" font-size="10" fill="var(--fg-muted)">peak</text><text x="598" y="80" text-anchor="end" font-size="10" fill="currentColor">19 TFLOPS fp16</text>
+    <text x="452" y="96" text-anchor="start" font-size="10" fill="var(--fg-muted)">power</text><text x="598" y="96" text-anchor="end" font-size="10" fill="currentColor">4.6 W</text>
+    <text x="452" y="112" text-anchor="start" font-size="10" fill="var(--fg-muted)">dispatch</text><text x="598" y="112" text-anchor="end" font-size="10" fill="currentColor">≈90 µs / call</text>
+    <text x="452" y="126" text-anchor="start" font-size="10" fill="var(--fg-muted)">runs</text><text x="598" y="126" text-anchor="end" font-size="10" fill="currentColor">compiled graphs</text>
+
+    <!-- IOSurface: the one buffer all three touch -->
+    <line x1="115" y1="132" x2="250" y2="188" stroke="var(--diagram-stroke)" marker-end="url(#f1a)"/>
+    <line x1="320" y1="132" x2="320" y2="188" stroke="var(--diagram-stroke)" marker-end="url(#f1a)"/>
+    <line x1="525" y1="132" x2="390" y2="188" stroke="var(--diagram-stroke)" marker-end="url(#f1a)"/>
+    <text x="150" y="172" text-anchor="end" font-size="9" fill="var(--fg-muted)">write</text><text x="328" y="168" text-anchor="start" font-size="9" fill="var(--fg-muted)">read</text><text x="492" y="172" text-anchor="start" font-size="9" fill="var(--fg-muted)">read / write</text>
+    <rect x="196" y="190" width="248" height="34" rx="3" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-dasharray="4 3"/>
+    <text x="320" y="206" text-anchor="middle" font-size="11" font-weight="500" fill="currentColor">IOSurface</text>
+    <text x="320" y="219" text-anchor="middle" font-size="9" fill="var(--fg-muted)">one buffer, three mappings, zero copies</text>
+
+    <!-- DRAM -->
+    <line x1="320" y1="224" x2="320" y2="244" stroke="var(--diagram-stroke)" marker-end="url(#f1a)"/>
+    <rect x="30" y="246" width="580" height="40" rx="3" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/>
+    <text x="320" y="264" text-anchor="middle" font-size="11" fill="currentColor">Unified DRAM · up to 32 GB</text>
+    <text x="320" y="278" text-anchor="middle" font-size="9" fill="var(--fg-muted)">120 GB/s, shared by all three · the ANE streams anything over 2 MiB through this</text>
+  </svg>
+  <figcaption>What the three engines have in common is the memory, not the programming model. A tensor produced by the GPU can be handed to the ANE by mapping the same IOSurface; the cost the ANE adds is a fixed ≈90 µs per submission.</figcaption>
+</figure>
+
+<p>The ANE is not a general-purpose processor. It has no instruction pointer in the traditional sense, no branch instructions, no loops, no dynamic control flow. You submit a compiled graph and the engine runs the entire thing as one atomic operation. You cannot pause it, step through layers, or inspect intermediate values. Input and output happen through IOSurfaces (shared memory regions that the CPU, GPU, and ANE can all access without copying).</p>
+
+<p>On M4, the ANE has an internal codename of <strong>H16G</strong>. The IORegistry identifies it as <code>AppleH16ANEInterface</code> with architecture <code>h16g</code>, version 192, and 16 registered cores. Previous generations: H11 (A11), H13 (M1), H14 (M2), H15 (M3). The "G" suffix likely indicates the Mac/iPad class (as opposed to phone or watch variants).</p>
+
+<h2>Inside the Engine</h2>
+
+<p>Our picture of the engine's internals comes from three directions. From the outside: hundreds of compiled programs diffed byte by byte, which is how the task-descriptor fields, the tiling rule, the weight-streaming stride, and the lookup-table format were recovered, each confirmed by emitting binaries from scratch and running them. From the compiler: a 2,360-byte parameter table (the Hardware Abstraction Table, or HAT) that we pulled out of the live M4 compiler process with LLDB by calling <code>ZinIrHalH16g::GetParams()</code>; it holds every number the scheduler reads. And from the Bryngelson decompilation of the M1 compiler, which gave us the names of the internal passes and the meaning of the HAT's fields so the M4 values could be read rather than guessed. Every number below is an M4 reading unless it says M1.</p>
+
+<figure>
+  <svg viewBox="0 0 640 310" role="img" aria-label="Two timelines: an operand under 2 MiB is loaded whole and then computed, serialized; an operand over 2 MiB is cut into tiles and each tile's DMA overlaps the previous tile's compute">
+    <rect x="0" y="0" width="640" height="310" fill="var(--diagram-bg)" rx="4"/>
+    <style>.dm{fill:var(--grp-a);fill-opacity:.35;stroke:var(--grp-a)} .mc{fill:var(--grp-b);fill-opacity:.35;stroke:var(--grp-b)}</style>
+    <text x="320" y="22" text-anchor="middle" font-size="11" font-weight="500" fill="currentColor">The 2 MiB rule · HAT[0x1b8] · same value on M1 and M4</text>
+
+    <!-- panel A -->
+    <text x="24" y="50" text-anchor="start" font-size="11" font-weight="500" fill="currentColor">operand ≤ 2 MiB → resident</text>
+    <text x="24" y="72" text-anchor="start" font-size="10" fill="var(--fg-muted)">DMA</text><rect x="70" y="60" width="150" height="18" rx="3" class="dm"/><text x="145.0" y="73" text-anchor="middle" font-size="9.5" fill="currentColor">load whole operand</text>
+    <text x="24" y="98" text-anchor="start" font-size="10" fill="var(--fg-muted)">MAC</text><rect x="222" y="86" width="240" height="18" rx="3" class="mc"/><text x="342.0" y="99" text-anchor="middle" font-size="9.5" fill="currentColor">compute</text>
+    <line x1="70" y1="112" x2="470" y2="112" stroke="var(--diagram-stroke)"/>
+    <text x="470" y="124" text-anchor="end" font-size="9" fill="var(--fg-muted)">time →</text>
+    <text x="24" y="124" text-anchor="start" font-size="9" fill="var(--fg-muted)">fill first, then run · the array idles during the load</text>
+
+    <line x1="24" y1="140" x2="616" y2="140" stroke="var(--border)"/>
+
+    <!-- panel B -->
+    <text x="24" y="162" text-anchor="start" font-size="11" font-weight="500" fill="currentColor">operand > 2 MiB → tiled and double-buffered</text>
+    <text x="24" y="184" text-anchor="start" font-size="10" fill="var(--fg-muted)">DMA</text>
+    <rect x="70" y="172" width="90" height="18" rx="3" class="dm"/><text x="115.0" y="185" text-anchor="middle" font-size="9.5" fill="currentColor">tile 0</text><rect x="162" y="172" width="90" height="18" rx="3" class="dm"/><text x="207.0" y="185" text-anchor="middle" font-size="9.5" fill="currentColor">tile 1</text><rect x="254" y="172" width="90" height="18" rx="3" class="dm"/><text x="299.0" y="185" text-anchor="middle" font-size="9.5" fill="currentColor">tile 2</text><rect x="346" y="172" width="90" height="18" rx="3" class="dm"/><text x="391.0" y="185" text-anchor="middle" font-size="9.5" fill="currentColor">tile 3</text>
+    <text x="24" y="210" text-anchor="start" font-size="10" fill="var(--fg-muted)">MAC</text>
+    <rect x="162" y="198" width="90" height="18" rx="3" class="mc"/><text x="207.0" y="211" text-anchor="middle" font-size="9.5" fill="currentColor">tile 0</text><rect x="254" y="198" width="90" height="18" rx="3" class="mc"/><text x="299.0" y="211" text-anchor="middle" font-size="9.5" fill="currentColor">tile 1</text><rect x="346" y="198" width="90" height="18" rx="3" class="mc"/><text x="391.0" y="211" text-anchor="middle" font-size="9.5" fill="currentColor">tile 2</text><rect x="438" y="198" width="90" height="18" rx="3" class="mc"/><text x="483.0" y="211" text-anchor="middle" font-size="9.5" fill="currentColor">tile 3</text>
+    <line x1="70" y1="224" x2="530" y2="224" stroke="var(--diagram-stroke)"/>
+    <text x="530" y="236" text-anchor="end" font-size="9" fill="var(--fg-muted)">time →</text>
+    <text x="24" y="236" text-anchor="start" font-size="9" fill="var(--fg-muted)">tile n+1 loads while tile n computes · only the first tile is exposed</text>
+
+    <!-- bank strip -->
+    <line x1="24" y1="252" x2="616" y2="252" stroke="var(--border)"/>
+    <text x="24" y="272" text-anchor="start" font-size="9.5" fill="var(--fg-secondary)">inside SRAM: 64 banks · 16 B granule · bank = ⌊addr / 16⌋ mod 64 · compiler picks a stride so consecutive rows land on different banks</text>
+    <rect x="24.0" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="33.3" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="42.6" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="51.900000000000006" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="61.2" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="70.5" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="79.80000000000001" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="89.10000000000001" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="98.4" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="107.7" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="117.0" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="126.30000000000001" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="135.60000000000002" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="144.9" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="154.20000000000002" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="163.5" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="172.8" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="182.10000000000002" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="191.4" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="200.70000000000002" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="210.0" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="219.3" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="228.60000000000002" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="237.9" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="247.20000000000002" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="256.5" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="265.8" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="275.1" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="284.40000000000003" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="293.70000000000005" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="303.0" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="312.3" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="321.6" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="330.90000000000003" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="340.20000000000005" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="349.5" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="358.8" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="368.1" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="377.40000000000003" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="386.70000000000005" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="396.0" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="405.3" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="414.6" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="423.90000000000003" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="433.20000000000005" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="442.50000000000006" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="451.8" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="461.1" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="470.40000000000003" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="479.70000000000005" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="489.00000000000006" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="498.3" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="507.6" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="516.9000000000001" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="526.2" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="535.5" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="544.8000000000001" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="554.1" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="563.4000000000001" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="572.7" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="582.0" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="591.3000000000001" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="600.6" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/><rect x="609.9000000000001" y="282" width="7.5" height="12" rx="1" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)" stroke-width=".5"/>
+    <rect x="24.0" y="282" width="7.5" height="12" rx="1" fill="var(--accent)" fill-opacity=".8"/><rect x="70.5" y="282" width="7.5" height="12" rx="1" fill="var(--accent)" fill-opacity=".8"/><rect x="117.0" y="282" width="7.5" height="12" rx="1" fill="var(--accent)" fill-opacity=".8"/><rect x="163.5" y="282" width="7.5" height="12" rx="1" fill="var(--accent)" fill-opacity=".8"/><rect x="210.0" y="282" width="7.5" height="12" rx="1" fill="var(--accent)" fill-opacity=".8"/><rect x="256.5" y="282" width="7.5" height="12" rx="1" fill="var(--accent)" fill-opacity=".8"/><rect x="303.0" y="282" width="7.5" height="12" rx="1" fill="var(--accent)" fill-opacity=".8"/><rect x="349.5" y="282" width="7.5" height="12" rx="1" fill="var(--accent)" fill-opacity=".8"/>
+    <text x="616" y="304" text-anchor="end" font-size="9" fill="var(--fg-muted)">8 rows, stride coprime with 64 → 8 different banks, no conflict</text>
+  </svg>
+  <figcaption>The compiler's memory decision in one picture. Below 2 MiB per operand the load and the compute serialize; above it the operand is tiled and the DMA of the next tile hides under the current tile's compute. The measured throughput step at ~2.3 MiB on M1 is this crossing, and the M4 HAT carries the same threshold.</figcaption>
+</figure>
+
+<h3>SRAM</h3>
+
+<p>The on-chip memory is a 64-bank scratchpad with a 16-byte interleave granule. An address maps to bank <code>floor(addr / 16) mod 64</code>. The compiler manages it as scratch space with no runtime cache replacement policy. When a tensor's data fits in SRAM, it stays there for the duration of the computation. When it does not fit, the compiler tiles the work and streams data through in chunks.</p>
+
+<p>The streaming threshold is 2 MiB per operand (not per operation, and not a sum of all operands). This value comes from the HAT at offset <code>0x1b8</code> and is the same on M1 and M4. Below 2 MiB, an operand can be fully resident before compute starts. Above it, the compiler splits the operand into tiles and double-buffers them: while tile N computes, tile N+1 loads.</p>
+
+<p>In Part 2 we measured a throughput cliff around 24-32 MB and attributed it to total SRAM size. The HAT tells a more precise story: the 2 MiB boundary is where the compiler switches from resident to streamed mode for each operand. Performance above that boundary depends on how well the DMA engine can overlap tile loads with compute, not on a hard capacity wall.</p>
+
+<p>Weights have their own budget. Up to 64 KiB of weights stay resident on-chip (the "kernel-coefficient store"). Weights up to 16 MiB can be streamed through in 16 DMA chunks. The compiler divides the weight matrix into 16 pieces regardless of total size and loads them sequentially.</p>
+
+<div class="key"><b>FINDING</b><span>One number, <code>HAT[0x1b8]</code> = 2 MiB per operand, decides whether the compiler keeps an operand resident or tiles and streams it. It is the same on M1 and M4.</span></div>
+
+<h3>Compute</h3>
+
+<p>The M4 compute array has 8 compute sets. Each compute set has 8 accumulators. Products are fp16. The accumulator itself is wider (likely fp32-class, based on M1 analysis), and the final output is rounded back to fp16. This means the ANE does not have native int8 multiply-accumulate. Int8 weights are dequantized to fp16 before the MACs fire. The "38 TOPS int8" marketing number counts each fp16 MAC as two int8 operations.</p>
+
+<p>The M1 had 4 compute sets. The doubling to 8 on M4 is consistent with the ~1.6x throughput increase between generations (M1: ~12 TFLOPS, M4: ~19 TFLOPS). The remaining gap may come from higher clock frequency on M4, but the ANE frequency has not been measured directly on either chip.</p>
+
+<p>The compiler controls the output-channel-group (OCG) size, meaning how many output channels are computed in one pass through the accumulator. The OCG is the smaller of a power-of-two accumulator budget and a format-specific byte cap (32, 16, or 8 bytes depending on weight format). The OCG formula and its constants are identical on M1 and M4.</p>
+
+<div class="key"><b>FINDING</b><span>The multipliers are fp16. Int8 is dequantized before them, so "38 TOPS" is 19 TFLOPS counted twice. M4 doubled the compute sets (4 → 8), not the lane width.</span></div>
+
+<h3>DMA</h3>
+
+<p>Data moves between DRAM and SRAM through DMA engines. The M1 compiler exposed three tile-DMA engines plus a kernel-DMA engine. The M4 DMA engine count has not been directly measured. In our tests, sweeping 2 through 8 independent input planes produced a linear slowdown of ~995 µs per additional plane. No concurrency knee appeared, suggesting the DMA path serializes tile loads in the configurations we tested.</p>
+
+<p>Fused operations avoid the DMA round-trip entirely. When consecutive operations in a compiled graph feed into each other, the compiler marks the intermediate as <code>DMA_INTER</code> instead of <code>DMA_STORE</code> + <code>DMA_LOAD</code>. The data stays in SRAM. This is the single largest optimization the compiler makes: a fused matmul + bias + relu runs 5.7x faster than dispatching the three ops separately. The compute is identical. The saved DRAM round-trips are the entire difference.</p>
+
+<div class="key"><b>FINDING</b><span>Fusion is the compiler's biggest lever: <code>DMA_INTER</code> keeps intermediates in SRAM. matmul + bias + relu fused runs 5.7× faster than the same three ops dispatched one at a time.</span></div>
+
+<h2>What the ANE Computes</h2>
+
+<p>The ANE supports approximately 50 hardware layer types, verified through the <code>ANECompiler.framework</code> validator exports (<code>_ANECValidate*Layer</code>). In practice, the operations that compile and execute fall into five groups.</p>
+
+<div class="table-wrap">
+<table>
+<tr><th>Group</th><th>Operations</th></tr>
+<tr><td><strong>Matrix ops</strong></td><td>matmul, conv (1x1/3x3/5x5), depthwise conv, SDPA (fused attention)</td></tr>
+<tr><td><strong>Elementwise</strong></td><td>256 ALU opcodes: add, mul, sub, max, min, plus post-ops (square, sign). Controlled by a single opcode byte in the binary.</td></tr>
+<tr><td><strong>Activations</strong></td><td>relu (direct ALU), sigmoid, tanh, gelu, silu, exp, softplus, elu (via 33-point piecewise-linear LUT), rsqrt/sqrt/reciprocal (dedicated hardware)</td></tr>
+<tr><td><strong>Reductions</strong></td><td>reduce_sum, reduce_mean, reduce_max (native hardware, not conv trick), softmax and layer_norm (decomposed into 6-7 fused primitives)</td></tr>
+<tr><td><strong>Layout</strong></td><td>reshape, transpose, concat, space_to_depth, depth_to_space, slice</td></tr>
+</table>
+</div>
+
+<p>Operations not supported on the hardware: <code>acos</code>, <code>asin</code>, <code>tan</code>, <code>log</code>, <code>cumsum</code>, <code>mod</code>, and boolean logical ops. These fall back to the CPU (via BNNS) or GPU (via Metal). CoreML handles the segmentation automatically.</p>
+
+<p>Activations like sigmoid and gelu do not have dedicated hardware. Instead, the compiler stores 33 fp16 samples in a segment called <code>__KERN_0</code> and the hardware linearly interpolates between them at evaluation time. For sigmoid with samples from -8 to +8, the max error is 2.4e-4. We verified that replacing the samples with an arbitrary function (x³, not a MIL op) produces correct output on hardware. Any pointwise function approximable by 33 piecewise-linear segments over a fixed domain can run on the ANE.</p>
+
+<h2>How Programs Reach the Hardware</h2>
+
+<p>The path from a neural network description to hardware execution has five layers:</p>
+
+<pre><code>MIL text (typed SSA graph)
+  → ANECCompile() via XPC to ANECompilerService
+    → 0xBEEFFACE Mach-O binary (Task Descriptor stream)
+      → aned daemon cache → IOKit DMA → ANE SRAM
+        → atomic graph execution → IOSurface output</code></pre>
+
+<p>MIL (Machine Learning Intermediate Language) is the input format. It is a text-based SSA language with typed tensors, named operations, and explicit shapes. The ANE compiler is a C function (<code>ANECCompile</code>) in the private <code>ANECompiler.framework</code>. It can also be reached through the ObjC API (<code>_ANEInMemoryModel.compileWithQoS:</code>).</p>
+
+<p>The compiler produces a custom Mach-O binary with magic number <code>0xBEEFFACE</code>, CPU type <code>0x80</code> (128, for ANE), and CPU subtype <code>0x07</code> (H16G). The binary contains a stream of Task Descriptors (TDs) that configure DMA engines and the compute array. The program is not a sequence of instructions in the CPU sense. It is a register-write stream that configures the hardware for one graph execution.</p>
+
+<p>Dispatch from the host goes through the <code>aned</code> daemon via XPC for compile and load, but evaluation takes a direct path through <code>ANEServicesProgramProcessRequestDirect</code> without the daemon. The host posts a mailbox command, the engine runs the entire graph, and the output appears in the designated IOSurface.</p>
+
+<p>Every evaluation, regardless of computation size, costs approximately <strong>90 µs</strong> of host time (XPC round-trip + IOKit setup). This floor is CPU-bound and does not change with SoC power state. Any operation completing in under ~1 ms spends a large fraction of wall-clock time in dispatch overhead. This is why operation fusion matters so much: fewer dispatches per forward pass means less time in the 90 µs tax.</p>
+
+<div class="key"><b>FINDING</b><span>Every evaluation costs ≈90 µs of host time before the engine does anything. Under ~1 ms of work, dispatch dominates; the fix is fewer, larger programs.</span></div>
+
+<h2>Performance</h2>
+
+<div class="correction">
+<p><strong>Corrections from Parts 1 and 2:</strong> The power figure of 2.79 W and efficiency of 6.6 TFLOPS/W reported in Part 2 do not reproduce. Those measurements were taken with <code>pmset lowpowermode</code> enabled without our knowledge (it persists across reboots). The corrected M4 peak power is 4.57 W at fp16 peak, giving 4.1 TFLOPS/W. All numbers below use the corrected measurements from August 2026.</p>
+</div>
+
+<h3>Throughput</h3>
+
+<p>Peak throughput requires deep operation chains (32-64 layers) at the right channel/spatial balance (512-1024 channels, 64²-128² spatial). A single matmul uses roughly 30% of peak because the 8-core pipeline is not fully occupied. A 64-layer conv1x1 chain fills the pipeline and reaches 98.8%.</p>
+
+<div class="table-wrap">
+<table>
+<tr><th>Configuration</th><th>FP16 TFLOPS</th><th>W8A8 TOPS</th><th>% of ceiling</th></tr>
+<tr><td>Single matmul 1024×1024</td><td>5.2</td><td></td><td>27%</td></tr>
+<tr><td>Single matmul 2048×2048</td><td>5.7</td><td></td><td>30%</td></tr>
+<tr><td>32L conv1x1 512ch 128²</td><td>18.67</td><td>34.54</td><td>98.3%</td></tr>
+<tr><td>64L conv1x1 512ch 128²</td><td><strong>18.77</strong></td><td>35.58</td><td><strong>98.8%</strong></td></tr>
+<tr><td>48L conv1x1 1024ch 64²</td><td>18.45</td><td><strong>36.01</strong></td><td>94.8% (W8A8)</td></tr>
+</table>
+</div>
+
+<figure>
+  <svg viewBox="0 0 640 260" role="img" aria-label="Bar chart of measured fp16 throughput: single matmuls reach about 5 to 6 TFLOPS, deep conv1x1 chains reach 18.5 to 18.8 against a 19 TFLOPS ceiling">
+    <rect x="0" y="0" width="640" height="260" fill="var(--diagram-bg)" rx="4"/>
+    <text x="320" y="22" text-anchor="middle" font-size="11" font-weight="500" fill="currentColor">Measured fp16 throughput, M4, unthrottled</text>
+    <line x1="230.0" y1="44" x2="230.0" y2="232" stroke="var(--border)"/><text x="230.0" y="246" text-anchor="middle" font-size="9" fill="var(--fg-muted)">0</text><line x1="320.0" y1="44" x2="320.0" y2="232" stroke="var(--border)"/><text x="320.0" y="246" text-anchor="middle" font-size="9" fill="var(--fg-muted)">5</text><line x1="410.0" y1="44" x2="410.0" y2="232" stroke="var(--border)"/><text x="410.0" y="246" text-anchor="middle" font-size="9" fill="var(--fg-muted)">10</text><line x1="500.0" y1="44" x2="500.0" y2="232" stroke="var(--border)"/><text x="500.0" y="246" text-anchor="middle" font-size="9" fill="var(--fg-muted)">15</text><line x1="590.0" y1="44" x2="590.0" y2="232" stroke="var(--border)"/><text x="590.0" y="246" text-anchor="middle" font-size="9" fill="var(--fg-muted)">20</text>
+    <text x="220" y="66" text-anchor="end" font-size="10" fill="currentColor">single matmul 1024²</text><rect class="bar" x="230" y="52" width="93.6" height="20" rx="3" fill="var(--chart-a)" fill-opacity=".8" data-tip="single matmul 1024²: 5.2 TFLOPS fp16 · 27% of 19 TFLOPS ceiling"/><text x="329.6" y="66" text-anchor="start" font-size="10" fill="currentColor">5.2</text><text x="220" y="102" text-anchor="end" font-size="10" fill="currentColor">single matmul 2048²</text><rect class="bar" x="230" y="88" width="102.6" height="20" rx="3" fill="var(--chart-a)" fill-opacity=".8" data-tip="single matmul 2048²: 5.7 TFLOPS fp16 · 30% of 19 TFLOPS ceiling"/><text x="338.6" y="102" text-anchor="start" font-size="10" fill="currentColor">5.7</text><text x="220" y="138" text-anchor="end" font-size="10" fill="currentColor">32L conv1x1 512ch 128²</text><rect class="bar" x="230" y="124" width="336.1" height="20" rx="3" fill="var(--chart-a)" fill-opacity=".8" data-tip="32L conv1x1 512ch 128²: 18.67 TFLOPS fp16 · 98% of 19 TFLOPS ceiling"/><text x="572.0600000000001" y="138" text-anchor="start" font-size="10" fill="currentColor">18.67</text><text x="220" y="174" text-anchor="end" font-size="10" fill="currentColor">64L conv1x1 512ch 128²</text><rect class="bar" x="230" y="160" width="337.9" height="20" rx="3" fill="var(--chart-a)" fill-opacity=".8" data-tip="64L conv1x1 512ch 128²: 18.77 TFLOPS fp16 · 99% of 19 TFLOPS ceiling"/><text x="573.86" y="174" text-anchor="start" font-size="10" fill="currentColor">18.77</text><text x="220" y="210" text-anchor="end" font-size="10" fill="currentColor">48L conv1x1 1024ch 64²</text><rect class="bar" x="230" y="196" width="332.1" height="20" rx="3" fill="var(--chart-a)" fill-opacity=".8" data-tip="48L conv1x1 1024ch 64²: 18.45 TFLOPS fp16 · 97% of 19 TFLOPS ceiling"/><text x="568.0999999999999" y="210" text-anchor="start" font-size="10" fill="currentColor">18.45</text>
+    <line x1="572.0" y1="40" x2="572.0" y2="236" stroke="var(--fg-secondary)" stroke-dasharray="4 3"/>
+    <text x="568.0" y="40" text-anchor="end" font-size="9" fill="var(--fg-secondary)">19 TFLOPS ceiling</text>
+    <text x="568.0" y="52" text-anchor="end" font-size="9" fill="var(--fg-muted)">("38 TOPS" = 19 × 2)</text>
+    <text x="410" y="258" text-anchor="middle" font-size="9" fill="var(--fg-muted)">TFLOPS</text>
+  </svg>
+  <figcaption>One matmul, however large, leaves two thirds of the array idle. A chain of 32 or more conv1x1 layers at 512–1024 channels fills the pipeline and runs within 1.2% of the ceiling.</figcaption>
+</figure>
+
+<p>The hardware ceiling is 19 TFLOPS fp16. Apple markets the ANE as "38 TOPS" by counting each fp16 MAC as two int8 operations.</p>
+
+<h3>INT8: activations, not weights</h3>
+
+<div class="correction">
+<p><strong>Correction from Part 2:</strong> Part 2 reported that int8 quantized models run at the same throughput as fp16 and concluded the ANE dequantizes int8 to fp16. This is half right. Int8 <em>weights</em> buy nothing (1.00x). The speedup comes from int8 <em>activations</em>, controlled by a single DMA configuration bit that tells the engine to move inter-tile data as 1 byte instead of 2. Int8 activation quantization gives 1.85x throughput.</p>
+</div>
+
+<div class="table-wrap">
+<table>
+<tr><th>Weights</th><th>Activations</th><th>Speedup</th></tr>
+<tr><td>fp16</td><td>fp16</td><td>baseline</td></tr>
+<tr><td>int8</td><td>fp16</td><td>1.00x</td></tr>
+<tr><td>int8</td><td>int8</td><td>1.85x</td></tr>
+</table>
+</div>
+
+<figure>
+  <svg viewBox="0 0 640 230" role="img" aria-label="Two paths: int8 weights are dequantized to fp16 before the multiplier so they save nothing; int8 activations halve the bytes moved between tiles through L2, which is the 1.85x">
+    <rect x="0" y="0" width="640" height="230" fill="var(--diagram-bg)" rx="4"/>
+    <defs><marker id="f4a" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><polygon points="0,0 6,3 0,6" fill="var(--diagram-stroke)"/></marker></defs>
+    <text x="320" y="22" text-anchor="middle" font-size="11" font-weight="500" fill="currentColor">Where int8 does and does not help</text>
+
+    <!-- weights lane -->
+    <text x="24" y="48" text-anchor="start" font-size="11" font-weight="500" fill="currentColor">int8</text><text x="24" y="62" text-anchor="start" font-size="11" font-weight="500" fill="currentColor">weights</text>
+    <rect x="130" y="40" width="110" height="30" rx="3" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/><text x="185" y="59" text-anchor="middle" font-size="10" fill="currentColor">weight store</text>
+    <line x1="240" y1="55" x2="268" y2="55" stroke="var(--diagram-stroke)" marker-end="url(#f4a)"/>
+    <rect x="270" y="40" width="110" height="30" rx="3" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/><text x="325" y="59" text-anchor="middle" font-size="10" fill="currentColor">dequant → fp16</text>
+    <line x1="380" y1="55" x2="408" y2="55" stroke="var(--diagram-stroke)" marker-end="url(#f4a)"/>
+    <rect x="410" y="40" width="110" height="30" rx="3" fill="var(--grp-b)" fill-opacity=".15" stroke="var(--grp-b)"/><text x="465" y="59" text-anchor="middle" font-size="10" fill="currentColor">fp16 MAC</text>
+    <text x="616" y="59" text-anchor="end" font-size="12" font-weight="500" fill="currentColor">1.00×</text>
+    <text x="130" y="86" text-anchor="start" font-size="9.5" fill="var(--fg-muted)">the multiplier never sees int8 · half the bytes at rest, same bytes in the datapath</text>
+
+    <line x1="24" y1="102" x2="616" y2="102" stroke="var(--border)"/>
+
+    <!-- activations lane -->
+    <text x="24" y="124" text-anchor="start" font-size="11" font-weight="500" fill="currentColor">int8</text><text x="24" y="138" text-anchor="start" font-size="11" font-weight="500" fill="currentColor">activations</text>
+    <rect x="130" y="116" width="90" height="30" rx="3" fill="var(--grp-b)" fill-opacity=".15" stroke="var(--grp-b)"/><text x="175" y="135" text-anchor="middle" font-size="10" fill="currentColor">tile n</text>
+    <line x1="220" y1="131" x2="298" y2="131" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#f4a)"/>
+    <rect x="300" y="116" width="90" height="30" rx="3" fill="var(--grp-a)" fill-opacity=".15" stroke="var(--grp-a)"/><text x="345" y="135" text-anchor="middle" font-size="10" fill="currentColor">L2 / SRAM</text>
+    <line x1="390" y1="131" x2="468" y2="131" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#f4a)"/>
+    <rect x="470" y="116" width="90" height="30" rx="3" fill="var(--grp-b)" fill-opacity=".15" stroke="var(--grp-b)"/><text x="515" y="135" text-anchor="middle" font-size="10" fill="currentColor">tile n+1</text>
+    <text x="616" y="135" text-anchor="end" font-size="12" font-weight="500" fill="currentColor">1.85×</text>
+    <!-- packets -->
+    <rect x="232" y="150" width="6" height="10" fill="var(--fg-muted)"/><rect x="240" y="150" width="6" height="10" fill="var(--fg-muted)"/><rect x="248" y="150" width="6" height="10" fill="var(--fg-muted)"/><rect x="256" y="150" width="6" height="10" fill="var(--fg-muted)"/><rect x="264" y="150" width="6" height="10" fill="var(--fg-muted)"/><rect x="272" y="150" width="6" height="10" fill="var(--fg-muted)"/><rect x="280" y="150" width="6" height="10" fill="var(--fg-muted)"/><rect x="288" y="150" width="6" height="10" fill="var(--fg-muted)"/><text x="300" y="159" text-anchor="start" font-size="9" fill="var(--fg-muted)">fp16: 2 B/elem</text>
+    <rect x="232" y="166" width="6" height="5" fill="var(--accent)"/><rect x="240" y="166" width="6" height="5" fill="var(--accent)"/><rect x="248" y="166" width="6" height="5" fill="var(--accent)"/><rect x="256" y="166" width="6" height="5" fill="var(--accent)"/><rect x="264" y="166" width="6" height="5" fill="var(--accent)"/><rect x="272" y="166" width="6" height="5" fill="var(--accent)"/><rect x="280" y="166" width="6" height="5" fill="var(--accent)"/><rect x="288" y="166" width="6" height="5" fill="var(--accent)"/><text x="300" y="173" text-anchor="start" font-size="9" fill="var(--accent)">int8: 1 B/elem · DMA config bit 0x8000</text>
+    <text x="130" y="196" text-anchor="start" font-size="9.5" fill="var(--fg-muted)">the only thing that changes is the width of the inter-tile transfer · the MACs still run fp16</text>
+    <text x="130" y="212" text-anchor="start" font-size="9.5" fill="var(--fg-muted)">cost: 12.25 W at 36 TOPS vs 4.57 W at 18.8 TFLOPS → less efficient per op, more per second</text>
+  </svg>
+  <figcaption>Quantizing the weights alone changes nothing the multiplier can see. Quantizing the activations halves every transfer between tiles, and on a 128-layer chain that is the whole 1.85×.</figcaption>
+</figure>
+
+<div class="key"><b>FINDING</b><span>Int8 weights: 1.00×. Int8 activations: 1.85×. The speedup is one DMA bit that halves inter-tile traffic; the MACs never see int8.</span></div>
+
+<h3>Power and efficiency</h3>
+
+<div class="table-wrap">
+<table>
+<tr><th>State</th><th>Throughput</th><th>ANE Power</th><th>Efficiency</th></tr>
+<tr><td>Idle</td><td>0</td><td>0 mW</td><td>Hard power gate</td></tr>
+<tr><td>FP16 peak</td><td>18.77 TFLOPS</td><td>4.57 W</td><td>4.1 TFLOPS/W</td></tr>
+<tr><td>W8A8 peak</td><td>36.01 TOPS</td><td>12.25 W</td><td>2.9 TOPS/W</td></tr>
+</table>
+</div>
+
+<p>The ANE has hard power gating: exactly 0 mW at idle, instant on. FP16 is the more power-efficient mode per operation. W8A8 draws 2.7x the power for 1.9x the throughput. Int8 activations buy throughput and SRAM footprint, not energy efficiency.</p>
+
+<h3>Geometry matters</h3>
+
+<p>A shallow-channel tensor starves the compute array. Reshaping with SpaceToDepth into the 512-1024 channel band, computing there, and reshaping back with DepthToSpace is the biggest performance lever available:</p>
+
+<div class="table-wrap">
+<table>
+<tr><th>Pipeline (32 layers)</th><th>FP16 TFLOPS</th><th>W8A8 TOPS</th></tr>
+<tr><td>Native 64ch 128²</td><td>3.92</td><td>6.62</td></tr>
+<tr><td>S2D(4) → 1024ch 32² → D2S</td><td><strong>16.37</strong></td><td><strong>31.97</strong></td></tr>
+<tr><td>Speedup</td><td>4.18x</td><td>4.83x</td></tr>
+</table>
+</div>
+
+<figure>
+  <svg viewBox="0 0 640 290" role="img" aria-label="A shallow 64-channel tensor keeps most of the 8 compute sets idle; reshaping it with space-to-depth into 1024 channels fills all 8 and lifts throughput from 3.9 to 16.4 TFLOPS">
+    <rect x="0" y="0" width="640" height="290" fill="var(--diagram-bg)" rx="4"/>
+    <defs><marker id="f5a" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><polygon points="0,0 6,3 0,6" fill="var(--diagram-stroke)"/></marker></defs>
+    <text x="320" y="22" text-anchor="middle" font-size="11" font-weight="500" fill="currentColor">Channels are what the array eats</text>
+
+    <text x="150" y="48" text-anchor="middle" font-size="11" font-weight="500" fill="currentColor">64 ch × 128 × 128</text>
+    <rect x="60" y="58" width="180" height="14" rx="2" fill="var(--grp-b)" fill-opacity=".25" stroke="var(--grp-b)"/>
+    <text x="150" y="68" text-anchor="middle" font-size="9" fill="var(--fg-secondary)">wide, shallow</text>
+    <text x="150" y="92" text-anchor="middle" font-size="9.5" fill="var(--fg-muted)">compute sets busy</text>
+    <rect x="46" y="100" width="22" height="16" rx="2" fill="var(--accent)" fill-opacity=".8" stroke="var(--diagram-stroke)" stroke-width=".6"/><rect x="72" y="100" width="22" height="16" rx="2" fill="var(--diagram-fill)" fill-opacity="1" stroke="var(--diagram-stroke)" stroke-width=".6"/><rect x="98" y="100" width="22" height="16" rx="2" fill="var(--diagram-fill)" fill-opacity="1" stroke="var(--diagram-stroke)" stroke-width=".6"/><rect x="124" y="100" width="22" height="16" rx="2" fill="var(--diagram-fill)" fill-opacity="1" stroke="var(--diagram-stroke)" stroke-width=".6"/><rect x="150" y="100" width="22" height="16" rx="2" fill="var(--diagram-fill)" fill-opacity="1" stroke="var(--diagram-stroke)" stroke-width=".6"/><rect x="176" y="100" width="22" height="16" rx="2" fill="var(--diagram-fill)" fill-opacity="1" stroke="var(--diagram-stroke)" stroke-width=".6"/><rect x="202" y="100" width="22" height="16" rx="2" fill="var(--diagram-fill)" fill-opacity="1" stroke="var(--diagram-stroke)" stroke-width=".6"/><rect x="228" y="100" width="22" height="16" rx="2" fill="var(--diagram-fill)" fill-opacity="1" stroke="var(--diagram-stroke)" stroke-width=".6"/>
+    <text x="150" y="134" text-anchor="middle" font-size="10" fill="currentColor">1 of 8</text>
+    <rect x="60" y="150" width="37.1" height="16" rx="3" fill="var(--chart-a)" fill-opacity=".8" data-tip="native 64ch 128²: 3.92 TFLOPS"/>
+    <text x="103.13684210526316" y="162" text-anchor="start" font-size="10" fill="currentColor">3.92 TFLOPS</text>
+
+    <text x="320" y="86" text-anchor="middle" font-size="10" font-weight="500" fill="currentColor">SpaceToDepth(4)</text>
+    <line x1="266" y1="108" x2="376" y2="108" stroke="var(--diagram-stroke)" stroke-width="1.5" marker-end="url(#f5a)"/>
+    <text x="320" y="128" text-anchor="middle" font-size="9" fill="var(--fg-muted)">DMA reshuffle, ~free</text>
+    <text x="320" y="140" text-anchor="middle" font-size="9" fill="var(--fg-muted)">block 2 lowers to a conv:</text>
+    <text x="320" y="151" text-anchor="middle" font-size="9" fill="var(--fg-muted)">avoid it</text>
+
+    <text x="490" y="48" text-anchor="middle" font-size="11" font-weight="500" fill="currentColor">1024 ch × 32 × 32</text>
+    <rect x="450" y="58" width="80" height="14" rx="2" fill="var(--grp-b)" fill-opacity=".25" stroke="var(--grp-b)"/>
+    <text x="490" y="68" text-anchor="middle" font-size="9" fill="var(--fg-secondary)">narrow, deep</text>
+    <text x="490" y="92" text-anchor="middle" font-size="9.5" fill="var(--fg-muted)">compute sets busy</text>
+    <rect x="386" y="100" width="22" height="16" rx="2" fill="var(--accent)" fill-opacity=".8" stroke="var(--diagram-stroke)" stroke-width=".6"/><rect x="412" y="100" width="22" height="16" rx="2" fill="var(--accent)" fill-opacity=".8" stroke="var(--diagram-stroke)" stroke-width=".6"/><rect x="438" y="100" width="22" height="16" rx="2" fill="var(--accent)" fill-opacity=".8" stroke="var(--diagram-stroke)" stroke-width=".6"/><rect x="464" y="100" width="22" height="16" rx="2" fill="var(--accent)" fill-opacity=".8" stroke="var(--diagram-stroke)" stroke-width=".6"/><rect x="490" y="100" width="22" height="16" rx="2" fill="var(--accent)" fill-opacity=".8" stroke="var(--diagram-stroke)" stroke-width=".6"/><rect x="516" y="100" width="22" height="16" rx="2" fill="var(--accent)" fill-opacity=".8" stroke="var(--diagram-stroke)" stroke-width=".6"/><rect x="542" y="100" width="22" height="16" rx="2" fill="var(--accent)" fill-opacity=".8" stroke="var(--diagram-stroke)" stroke-width=".6"/><rect x="568" y="100" width="22" height="16" rx="2" fill="var(--accent)" fill-opacity=".8" stroke="var(--diagram-stroke)" stroke-width=".6"/>
+    <text x="490" y="134" text-anchor="middle" font-size="10" fill="currentColor">8 of 8</text>
+    <rect x="400" y="150" width="155.1" height="16" rx="3" fill="var(--chart-a)" fill-opacity=".8" data-tip="S2D(4) → 1024ch 32² → D2S: 16.37 TFLOPS end to end"/>
+    <text x="561.0842105263158" y="162" text-anchor="start" font-size="10" fill="currentColor">16.37</text>
+
+    <line x1="40" y1="184" x2="600" y2="184" stroke="var(--border)"/>
+    <text x="320" y="206" text-anchor="middle" font-size="10" fill="var(--fg-secondary)">same FLOPs, same 32 layers, same weights</text>
+    <text x="320" y="222" text-anchor="middle" font-size="10" fill="var(--fg-secondary)">4.18× faster end to end, S2D and D2S included · W8A8: 6.62 → 31.97 TOPS, 4.83×</text>
+    <text x="320" y="246" text-anchor="middle" font-size="9.5" fill="var(--fg-muted)">the compiler splits output channels across compute sets,</text>
+    <text x="320" y="260" text-anchor="middle" font-size="9.5" fill="var(--fg-muted)">so a 64-channel layer can never occupy more than a fraction of the array</text>
+  </svg>
+  <figcaption>The array parallelizes over output channels. A shallow tensor leaves most compute sets idle regardless of how large its spatial extent is; folding spatial into channels with SpaceToDepth is the single biggest lever we found.</figcaption>
+</figure>
+
+<p>S2D/D2S overhead is 0.3-1.4% of the pipeline. Avoid block_size=2: the compiler lowers it as a convolution with one-hot weights (2.8-3.1% overhead) rather than a DMA reshuffle.</p>
+
+<div class="key"><b>FINDING</b><span>The array parallelizes over channels. SpaceToDepth(4) on a 64-channel tensor lifted a 32-layer chain from 3.92 to 16.37 TFLOPS, 4.18× end to end.</span></div>
+
+<h2>ANE vs GPU vs CPU</h2>
+
+<p>The three engines on an M4 serve different roles. None replaces the others.</p>
+
+<div class="table-wrap">
+<table>
+<tr><th></th><th>ANE</th><th>GPU (Metal)</th><th>CPU (SME)</th></tr>
+<tr><td><strong>Peak throughput</strong></td><td>19 TFLOPS fp16</td><td>~3.6 TFLOPS fp16</td><td>3.9 TOPS int8</td></tr>
+<tr><td><strong>Power at peak</strong></td><td>4.6 W</td><td>~8-12 W</td><td>~5-8 W</td></tr>
+<tr><td><strong>Dispatch overhead</strong></td><td>~90 µs (XPC)</td><td>~0 (in-flight)</td><td>0 (inline)</td></tr>
+<tr><td><strong>Programming</strong></td><td>MIL graph → binary</td><td>Metal shaders</td><td>Inline assembly</td></tr>
+<tr><td><strong>Flexibility</strong></td><td>Fixed op set</td><td>Arbitrary compute</td><td>Arbitrary code</td></tr>
+<tr><td><strong>I/O</strong></td><td>IOSurface</td><td>MTLBuffer</td><td>Stack/heap</td></tr>
+</table>
+</div>
+
+<p>For supported operations at batch sizes large enough to amortize the 90 µs dispatch, the ANE is 5x faster than the GPU and 8-13x more power-efficient than the CPU. The GPU wins on flexibility and zero dispatch overhead for in-flight work. The CPU wins on arbitrary code and instant dispatch.</p>
+
+<figure>
+  <svg viewBox="0 0 640 260" role="img" aria-label="Line chart: ANE wall time is 90 microseconds plus compute; CPU wall time is about 4.9 times the ANE compute time; the lines cross near 23 microseconds of ANE work, below which the CPU is faster">
+    <rect x="0" y="0" width="640" height="260" fill="var(--diagram-bg)" rx="4"/>
+    <text x="320" y="22" text-anchor="middle" font-size="11" font-weight="500" fill="currentColor">Where the 90 µs dispatch floor stops mattering</text>
+    <line x1="70" y1="220.0" x2="600" y2="220.0" stroke="var(--border)"/><text x="64" y="224.0" text-anchor="end" font-size="9" fill="var(--fg-muted)">0</text><line x1="70" y1="175.0" x2="600" y2="175.0" stroke="var(--border)"/><text x="64" y="179.0" text-anchor="end" font-size="9" fill="var(--fg-muted)">100</text><line x1="70" y1="130.0" x2="600" y2="130.0" stroke="var(--border)"/><text x="64" y="134.0" text-anchor="end" font-size="9" fill="var(--fg-muted)">200</text><line x1="70" y1="85.0" x2="600" y2="85.0" stroke="var(--border)"/><text x="64" y="89.0" text-anchor="end" font-size="9" fill="var(--fg-muted)">300</text><line x1="70" y1="40.0" x2="600" y2="40.0" stroke="var(--border)"/><text x="64" y="44.0" text-anchor="end" font-size="9" fill="var(--fg-muted)">400</text>
+    <text x="70.0" y="234" text-anchor="middle" font-size="9" fill="var(--fg-muted)">0</text><text x="246.66666666666666" y="234" text-anchor="middle" font-size="9" fill="var(--fg-muted)">100</text><text x="423.3333333333333" y="234" text-anchor="middle" font-size="9" fill="var(--fg-muted)">200</text><text x="600.0" y="234" text-anchor="middle" font-size="9" fill="var(--fg-muted)">300</text>
+    <text x="335" y="250" text-anchor="middle" font-size="9.5" fill="var(--fg-muted)">work in the op, measured as ANE compute time (µs)</text>
+    <text x="14" y="130" font-size="9.5" fill="var(--fg-muted)" transform="rotate(-90 14 130)" text-anchor="middle">wall time (µs)</text>
+    <polyline points="70.0,220.0 73.5,215.6 77.1,211.2 80.6,206.8 84.1,202.4 87.7,197.9 91.2,193.5 94.7,189.1 98.3,184.7 101.8,180.3 105.3,175.9 108.9,171.5 112.4,167.1 115.9,162.7 119.5,158.3 123.0,153.8 126.5,149.4 130.1,145.0 133.6,140.6 137.1,136.2 140.7,131.8 144.2,127.4 147.7,123.0 151.3,118.6 154.8,114.2 158.3,109.7 161.9,105.3 165.4,100.9 168.9,96.5 172.5,92.1 176.0,87.7 179.5,83.3 183.1,78.9 186.6,74.5 190.1,70.1 193.7,65.7 197.2,61.2 200.7,56.8 204.3,52.4 207.8,48.0 211.3,43.6" fill="none" stroke="var(--chart-b)" stroke-width="2"/>
+    <polyline points="70.0,179.5 87.7,175.0 105.3,170.5 123.0,166.0 140.7,161.5 158.3,157.0 176.0,152.5 193.7,148.0 211.3,143.5 229.0,139.0 246.7,134.5 264.3,130.0 282.0,125.5 299.7,121.0 317.3,116.5 335.0,112.0 352.7,107.5 370.3,103.0 388.0,98.5 405.7,94.0 423.3,89.5 441.0,85.0 458.7,80.5 476.3,76.0 494.0,71.5 511.7,67.0 529.3,62.5 547.0,58.0 564.7,53.5 582.3,49.0 600.0,44.5" fill="none" stroke="var(--chart-a)" stroke-width="2"/>
+    <line x1="110.8" y1="40" x2="110.8" y2="220" stroke="var(--fg-secondary)" stroke-dasharray="3 3"/>
+    <circle cx="110.8" cy="169.1" r="4" fill="var(--bg)" stroke="var(--fg)" stroke-width="1.5"/>
+    <text x="122.76923076923077" y="195.1153846153846" text-anchor="start" font-size="10" fill="currentColor">crossover ≈ 23 µs of ANE work</text>
+    <text x="122.76923076923077" y="209.1153846153846" text-anchor="start" font-size="9" fill="var(--fg-muted)">(≈ 113 µs on the CPU)</text>
+    <text x="596" y="62.5" text-anchor="end" font-size="10" fill="var(--chart-a)">ANE: 90 µs + t</text>
+    <text x="215.8" y="52.00999999999996" text-anchor="start" font-size="10" fill="var(--chart-b)">CPU / SME: ≈ 4.9 t</text>
+    <rect x="70" y="40" width="40.8" height="180" fill="var(--chart-b)" fill-opacity=".06"/>
+    <text x="76" y="54" text-anchor="start" font-size="9.5" fill="var(--chart-b)">CPU wins</text>
+    <text x="594" y="212" text-anchor="end" font-size="9.5" fill="var(--chart-a)">ANE wins</text>
+  </svg>
+  <figcaption>A model, not a measurement, except for its two inputs: the ≈90 µs floor measured on M4 and the ≈4.9× peak ratio between the ANE and the CPU's matrix unit. Anything shorter than ~23 µs of ANE work is faster on the CPU; anything longer belongs on the ANE, and fusing ops into one program moves work rightward.</figcaption>
+</figure>
+
+<p>For LLM inference, the practical split is: ANE for prefill (large-batch matrix operations, tiled as convolutions), CPU/SME for token-by-token decode (single-token operations where the 90 µs dispatch dominates). For on-device training, the ANE handles forward and backward matmuls at 2.8-4.6 W while the CPU handles weight updates and operations the ANE does not support (masked attention, Adam optimizer).</p>
+
+<div class="key"><b>FINDING</b><span>ANE for prefill and anything over ~25 µs of matrix work; CPU/SME for single-token decode where the 90 µs floor would dominate.</span></div>
+
+<h2>The M6: Dual ANE</h2>
+
+<p>Apple announced the M6 on August 25, 2026, built on TSMC's 2nm process. The headline change for the ANE: the M6 has two of them. Apple calls it a "Dual 16-core Neural Engine" and claims 2x peak compute over previous generations. System frameworks can use both engines simultaneously.</p>
+
+<p>Apple did not publish a TOPS number for the M6 ANE. Based on what we know: if each engine matches the M4's 19 TFLOPS fp16, the dual configuration would deliver 38 TFLOPS fp16 (76 TOPS by Apple's int8 marketing math). Whether the two engines share SRAM, coordinate DMA, or simply operate as independent units with separate memory pools is not disclosed. The DRAM bandwidth increased to 170 GB/s (from 120 GB/s on M4), a 42% increase that would partially offset the bandwidth pressure of running two engines against the same memory.</p>
+
+<figure>
+  <svg viewBox="0 0 640 250" role="img" aria-label="M4 with one 16-core ANE on 120 GB/s DRAM beside M6 with two 16-core ANEs on 170 GB/s DRAM; dashed links mark what Apple has not said: shared SRAM, one or two dispatch paths, and whether one graph can span both">
+    <rect x="0" y="0" width="640" height="250" fill="var(--diagram-bg)" rx="4"/>
+    <defs><marker id="f7a" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><polygon points="0,0 6,3 0,6" fill="var(--diagram-stroke)"/></marker></defs>
+    <text x="150" y="22" text-anchor="middle" font-size="11" font-weight="500" fill="currentColor">M4 · 3 nm</text>
+    <text x="470" y="22" text-anchor="middle" font-size="11" font-weight="500" fill="currentColor">M6 · 2 nm · announced Aug 25 2026</text>
+    <line x1="300" y1="30" x2="300" y2="230" stroke="var(--border)"/>
+
+    <!-- M4 -->
+    <rect x="90" y="40" width="120" height="70" rx="3" fill="var(--accent)" fill-opacity=".12" stroke="var(--accent)" stroke-width="1.5"/>
+    <text x="150" y="62" text-anchor="middle" font-size="11" font-weight="500" fill="currentColor">ANE</text><text x="150" y="78" text-anchor="middle" font-size="10" fill="var(--fg-secondary)">16 cores · H16G</text><text x="150" y="94" text-anchor="middle" font-size="10" fill="var(--fg-secondary)">19 TFLOPS · 4.6 W</text>
+    <line x1="150" y1="110" x2="150" y2="140" stroke="var(--diagram-stroke)" marker-end="url(#f7a)"/>
+    <rect x="40" y="142" width="220" height="34" rx="3" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/>
+    <text x="150" y="158" text-anchor="middle" font-size="11" fill="currentColor">DRAM · 120 GB/s</text><text x="150" y="171" text-anchor="middle" font-size="9" fill="var(--fg-muted)">measured: everything in this article</text>
+    <text x="150" y="204" text-anchor="middle" font-size="10" fill="var(--fg-secondary)">one dispatch path · ≈90 µs</text>
+
+    <!-- M6 -->
+    <rect x="340" y="40" width="120" height="70" rx="3" fill="var(--accent)" fill-opacity=".12" stroke="var(--accent)" stroke-width="1.5"/>
+    <text x="400" y="62" text-anchor="middle" font-size="11" font-weight="500" fill="currentColor">ANE 0</text><text x="400" y="78" text-anchor="middle" font-size="10" fill="var(--fg-secondary)">16 cores</text><text x="400" y="94" text-anchor="middle" font-size="10" fill="var(--fg-secondary)">19 TFLOPS?</text>
+    <rect x="480" y="40" width="120" height="70" rx="3" fill="var(--accent)" fill-opacity=".12" stroke="var(--accent)" stroke-width="1.5"/>
+    <text x="540" y="62" text-anchor="middle" font-size="11" font-weight="500" fill="currentColor">ANE 1</text><text x="540" y="78" text-anchor="middle" font-size="10" fill="var(--fg-secondary)">16 cores</text><text x="540" y="94" text-anchor="middle" font-size="10" fill="var(--fg-secondary)">19 TFLOPS?</text>
+    <line x1="460" y1="75" x2="480" y2="75" stroke="var(--fg-secondary)" stroke-dasharray="3 3"/>
+    <text x="470" y="66" text-anchor="middle" font-size="11" font-weight="500" fill="var(--fg-secondary)">?</text>
+    <line x1="400" y1="110" x2="400" y2="140" stroke="var(--diagram-stroke)" marker-end="url(#f7a)"/>
+    <line x1="540" y1="110" x2="540" y2="140" stroke="var(--diagram-stroke)" marker-end="url(#f7a)"/>
+    <rect x="330" y="142" width="280" height="34" rx="3" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/>
+    <text x="470" y="158" text-anchor="middle" font-size="11" fill="currentColor">DRAM · 170 GB/s (+42%)</text><text x="470" y="171" text-anchor="middle" font-size="9" fill="var(--fg-muted)">Apple: "2× peak compute" · no TOPS figure published</text>
+    <text x="470" y="196" text-anchor="middle" font-size="10" fill="var(--fg-secondary)">open: shared SRAM? one dispatch or two?</text>
+    <text x="470" y="210" text-anchor="middle" font-size="10" fill="var(--fg-secondary)">can one compiled graph span both engines?</text>
+    <text x="470" y="232" text-anchor="middle" font-size="9.5" fill="var(--fg-muted)">expected if independent: 38 TFLOPS fp16 · "76 TOPS"</text>
+  </svg>
+  <figcaption>What Apple has said about the M6 Neural Engine fits in one box: two of them, twice the peak, both usable at once by system frameworks. The dashed link and the three questions under it are what a HAT dump and a dispatch-floor measurement on real hardware would settle.</figcaption>
+</figure>
+
+<p>Several architectural questions follow from the dual-engine design. Can a single compiled graph span both engines, or does the framework partition the model into two independent subgraphs? Does each engine have its own 2 MiB operand threshold and 64 KiB kernel store, or do they share? Are the dispatch XPC paths independent (two 90 µs tax rounds, or one)?</p>
+
+<p>Apple also added "Neural Accelerators" to the M6 GPU cores, claiming a 30% improvement over M5 for GPU-side AI work. These are separate from the ANE and appear to be small fixed-function units within the GPU pipeline, similar to NVIDIA's tensor cores. Whether they share the same ISA as the ANE or use their own encoding is unknown.</p>
+
+<p>The M6 skipped Pro and Max variants. Apple says it is focusing on "future AI-centric chip designs." The dual-ANE M6 may be the beginning of a scaling strategy where NPU count grows with die area, the way GPU cores have scaled across the M-series lineup. If so, the M6 Pro/Max equivalents (whenever they arrive) could have 4 or 8 ANE instances.</p>
+
+<p>We do not have an M6 to test. The predictions here are extrapolations from M4 measurements and Apple's public statements. When an M6 is available, the first experiments would be: dump the HAT to check whether the per-engine parameters changed, measure the dispatch floor for single and dual-engine workloads, and determine whether the two engines can overlap or must serialize.</p>
+
+<div class="key"><b>FINDING</b><span>M6 ships two 16-core engines and a 42% wider memory bus. Apple has said "2× peak" and nothing about how they coordinate.</span></div>
+
+<h2>Limits and Open Questions</h2>
+
+<p><strong>Program size.</strong> 256 Task Descriptor blocks execute correctly on M4. 257 fails with status <code>0x15</code>. But the failing case also crosses exactly 512 MiB per tensor, so the boundary could be either limit or both.</p>
+
+<p><strong>No compute/DMA overlap.</strong> A combined matmul + ReLU program ran only ~1% faster than the sum of the two run separately (after subtracting the dispatch floor). The engine appears to serialize MAC and DMA work within a single program.</p>
+
+<p><strong>No wide issue.</strong> Eight independent adds were 1.008x faster than eight chained adds. The engine does not execute independent operations in parallel across compute sets in the configurations we tested. The M1 compiler permits MAC + planar-engine co-issue for independent operations on different engine types, but same-engine overlap is rejected.</p>
+
+<p><strong>No FP8.</strong> The E4M3 capability gate in the HAT is zero on both M1 and M4. The compute path is fp16.</p>
+
+<p><strong>No branching.</strong> The ANE has no conditional execution. Every operation in a compiled graph runs every time. Dynamic shapes are supported only through procedure indices (selecting among pre-compiled shapes) or runtime-variable dimension bindings in the dispatch descriptor.</p>
+
+<p><strong>Unknown lane width.</strong> The M1 paper reports 4 fp16 or 8 int8 output channels per cycle. The M4 HAT carries the same per-accumulator tier values (8/4/2/1) but these are tiling-formula inputs, not the per-cycle rate itself. The M4 per-cycle lane width has not been independently measured.</p>
+
+<hr>
+
+<p>The M4 ANE is a fixed-function fp16 matrix accelerator with 8 compute sets, 64 banks of on-chip SRAM, and a compiler-managed streaming model that tiles work around a 2 MiB per-operand budget. It reaches 19 TFLOPS fp16 at under 5 watts and draws exactly 0 mW when idle. Its constraints (no branching, fixed op set, fp16-only MACs, 90 µs dispatch floor) are the price of that efficiency. The hardware is not complicated. The complexity is in the software stack above it, which Apple chose to keep private.</p>
+
+<p>The M6 doubles the engine count. Whether that is two independent accelerators or a coordinated pair remains to be measured.</p>
+
+<hr>
+
+<h2 class="plain">References</h2>
+
+<ol class="ref-list">
+<li>Spencer H. Bryngelson. <em>Apple Neural Engine: Architecture, Programming, and Performance.</em> arXiv:2606.22283, June 2026. <a href="https://arxiv.org/abs/2606.22283">arxiv.org/abs/2606.22283</a></li>
+<li>Ramchand Kumaresan. <em>Orion: Characterizing and Programming Apple's Neural Engine for LLM Training and Inference.</em> arXiv:2603.06728, March 2026. <a href="https://arxiv.org/abs/2603.06728">arxiv.org/abs/2603.06728</a></li>
+<li>Spencer H. Bryngelson. <em>ANEForge: Python for direct computation on the Apple Neural Engine.</em> arXiv:2606.17090, June 2026. <a href="https://arxiv.org/abs/2606.17090">arxiv.org/abs/2606.17090</a></li>
+<li>Manjeet Singh. <em>Inside the M4 Apple Neural Engine</em>, Parts 1-3. maderix.substack.com, 2026. <a href="https://maderix.substack.com/p/inside-the-m4-apple-neural-engine">Part 1</a>, <a href="https://maderix.substack.com/p/inside-the-m4-apple-neural-engine-615">Part 2</a>, <a href="https://maderix.substack.com/p/inside-the-m4-apple-neural-engine-c8b">Part 3</a></li>
+<li>Dougall Johnson. <em>Apple G13 GPU Architecture.</em> <a href="https://github.com/dougallj/applegpu">github.com/dougallj/applegpu</a>, 2021-present.</li>
+<li>Apple Inc. <em>Apple introduces M6 and M5 Ultra for a big leap in performance and AI compute.</em> August 25, 2026. <a href="https://www.apple.com/newsroom/2026/08/apple-introduces-m6-and-m5-ultra-for-a-big-leap-in-performance-and-ai-compute/">apple.com/newsroom</a></li>
+</ol>
+
+</article>
+<div class="fig-tip" id="fig-tip" role="status"></div>
+<script>
+(function(){
+  // one shared tooltip for every [data-tip] mark in the static figures
+  var tip=document.getElementById('fig-tip');
+  document.addEventListener('mouseover',function(e){var t=e.target.closest&&e.target.closest('[data-tip]');if(!t)return;tip.textContent=t.getAttribute('data-tip');tip.classList.add('show');});
+  document.addEventListener('mousemove',function(e){if(!tip.classList.contains('show'))return;tip.style.left=(e.clientX+14)+'px';tip.style.top=(e.clientY+14)+'px';});
+  document.addEventListener('mouseout',function(e){if(e.target.closest&&e.target.closest('[data-tip]'))tip.classList.remove('show');});
+})();
+</script>
+
+<script>
+(function () {
+  var NS = 'http://www.w3.org/2000/svg';
+  function el(tag, attrs) { var e = document.createElementNS(NS, tag); for (var k in attrs) e.setAttribute(k, attrs[k]); return e; }
+
+  // ---- procedurally drawn parts ----
+  // Repetitive geometry (bank grid, SRAM cells, weight chunks, compute sets) is
+  // generated here rather than hand-written in the SVG. Highlight overlays get a
+  // data-from attribute so the stepper reveals them like any other element.
+  // compiler bank grid (8x8 = 64 banks)
+  var bg = document.getElementById('bankgrid'), bs = document.getElementById('bankstripe');
+  for (var r = 0; r < 8; r++) for (var c = 0; c < 8; c++) {
+    bg.appendChild(el('rect', { x: 641 + c * 12, y: 64 + r * 12, width: 10, height: 10, rx: 1 }));
+  }
+  // stride with gcd(s/16,64)=1 hits every bank once: draw the 8 accessed rows as a diagonal walk
+  for (var i = 0; i < 8; i++) {
+    bs.appendChild(el('rect', { x: 641 + ((i * 3) % 8) * 12, y: 64 + i * 12, width: 10, height: 10, rx: 1, 'class': 'lit' }));
+  }
+
+  // SRAM: 4 rows x 16 banks
+  var sr = document.getElementById('sram'), sl = document.getElementById('sramlit');
+  for (var r2 = 0; r2 < 4; r2++) for (var c2 = 0; c2 < 16; c2++) {
+    sr.appendChild(el('rect', { x: 72 + c2 * 34.5, y: 448 + r2 * 20, width: 30, height: 16, rx: 1.5 }));
+    if (c2 === 0) sr.appendChild(el('text', { x: 66, y: 460 + r2 * 20, 'font-size': 8, 'text-anchor': 'end', fill: 'var(--fg-muted)' })).textContent = '';
+  }
+  var lab = el('text', { x: 345, y: 530, 'text-anchor': 'middle', 'font-size': 10, fill: 'var(--fg-muted)' });
+  lab.textContent = 'bank 0 … bank 63 · tile 0 resident, tile 1 streaming in'; sr.parentNode.insertBefore(lab, sl);
+  // lit pattern: tile 0 occupies rows 0-1 (resident), tile 1 rows 2-3 partial (streaming)
+  for (var r3 = 0; r3 < 4; r3++) for (var c3 = 0; c3 < 16; c3++) {
+    var strong = r3 < 2, partial = r3 >= 2 && c3 < 9;
+    if (!strong && !partial) continue;
+    var q = el('rect', { x: 72 + c3 * 34.5, y: 448 + r3 * 20, width: 30, height: 16, rx: 1.5, 'class': strong ? 'lit' : 'lit2' });
+    q.setAttribute('data-from', strong ? '7' : '8'); sl.appendChild(q);
+  }
+
+  // weight store: 4x4 chunks
+  var ws = document.getElementById('wstore'), wl = document.getElementById('wstorelit');
+  for (var r4 = 0; r4 < 4; r4++) for (var c4 = 0; c4 < 4; c4++) {
+    ws.appendChild(el('rect', { x: 668 + c4 * 40, y: 458 + r4 * 18, width: 34, height: 14, rx: 1.5 }));
+    var w = el('rect', { x: 668 + c4 * 40, y: 458 + r4 * 18, width: 34, height: 14, rx: 1.5, 'class': 'lit2' });
+    w.setAttribute('data-from', '7'); wl.appendChild(w);
+  }
+  var wlab = el('text', { x: 745, y: 530, 'text-anchor': 'middle', 'font-size': 10, fill: 'var(--fg-muted)' });
+  wlab.textContent = 'STEP = weight_bytes / 16'; ws.parentNode.insertBefore(wlab, wl);
+
+  // compute sets
+  var cs = document.getElementById('cs');
+  for (var i2 = 0; i2 < 8; i2++) {
+    cs.appendChild(el('rect', { x: 76 + i2 * 69, y: 582, width: 58, height: 24, rx: 2, fill: 'var(--diagram-fill)', stroke: 'var(--diagram-stroke)', 'stroke-width': .6 }));
+    var t = el('text', { x: 105 + i2 * 69, y: 598, 'text-anchor': 'middle', 'font-size': 10 }); t.textContent = 'CS ' + i2; cs.appendChild(t);
+    var h = el('rect', { x: 76 + i2 * 69, y: 582, width: 58, height: 24, rx: 2, 'class': 'lit2' }); h.setAttribute('data-from', '8'); cs.appendChild(h);
+  }
+
+  // ---- steps ----
+  // [title, evidence, html]. evidence: 'm4' = measured on this M4,
+  // 'm1' = we measured the effect on M4; the internal pass names come from the Bryngelson M1 decompile.
+  // groupOf[i] names the <g class="st"> that lights up for step i.
+  // To add a step: push here, add its group id to groupOf, and tag any
+  // SVG elements with data-from / data-until.
+  var steps = [
+    ['MIL text', 'm4', 'The program as the compiler receives it: a typed SSA graph, here conv → add(bias) → relu on an fp16 [1,512,1,256] tensor. Hand-written, generated by coremltools, or handed over as <code>NSData</code> through the in-memory path. Every program in this series was authored from scratch.'],
+    ['Validation', 'm4', 'Each op passes its <code>_ANECValidate{Op}Layer</code> entry point, one of 50 exported validators. Operand count, shape, rank, and the per-chip capability byte from the HAT are checked. A reject is a string: <code>"can not fit the Kmem"</code>, <code>"Softmax is not supported by this ANE architecture"</code>. Passing validation does not guarantee code generation.'],
+    ['Phase 1 · Fusion', 'm1', 'Three ops collapse into one engine layer. The bias becomes the gain-offset-control offset, relu becomes a post-GOC activation slot, and the whole thing lives in a 7-slot <code>ZinNEBypassLayer</code>. matmul is rewritten as conv1x1; dequantize folds into the weight path. On M4 we see the result directly in the compiled bytes: one TD chain, intermediates marked <code>DMA_INTER</code>, no DRAM round-trip. The pass names come from the M1 decompile.'],
+    ['Phase 2 · Legalization', 'm1', 'The graph is forced inside the hardware envelope: rank ≤ 5, dimensions ≤ 65,536, kernel memory ≤ the per-format cap. The rule that matters most is the working set: any single operand over <code>HAT[0x1b8]</code> = 2 MiB is split into tiles that stream through double-buffered. The 4 MiB operand here becomes two 2 MiB tiles.'],
+    ['Phase 3 · Schedule', 'm1', 'A greedy list scheduler linearizes the fused graph into Task Descriptors and closes a partition when peak L2 pressure over the live range exceeds <code>HAT[0x1b8] × f</code>. The gauge shows the pressure check. Tie-breaks: ring-buffer membership, sibling score, topological order. On M4, 256 TD blocks execute; the 257th fails.'],
+    ['Phase 4 · Memory', 'm1', 'Buffers get row strides from the bank-conflict optimizer: bank = ⌊addr/16⌋ mod 64, cost scored over a 64-entry vector, stride bounded by <code>HAT[0x1f8]</code>. A stride whose granule count is coprime with 64 touches every bank once (the diagonal). Weights pack into 16 DMA chunks: STEP = weight_bytes / 16, verified across 19 compiled convs.'],
+    ['HWX binary', 'm4', 'The output is a Mach-O with magic <code>0xBEEFFACE</code>, cputype 0x80, subtype 0x07 for H16G. <code>__TEXT.__text</code> holds the TD register-write stream, <code>__KERN_0</code> the weights or a 33-sample activation table, two <code>__FVMLIB</code> segments the input and output descriptors. A matmul is ~64 KB regardless of size; dimensions bind at run time from the IOSurface.'],
+    ['Load', 'm4', 'aned writes model.hwx to its on-disk cache and reads it back verbatim: corrupt the magic and the load fails with <code>0x130004</code>. IOKit pins the buffers, the DART maps them into the engine’s address space at 16 KiB pages, and the program is DMA’d into SRAM. The host pays the ≈90 µs XPC dispatch on every evaluation, so fusing ops into one program is worth more than any single kernel optimization.'],
+    ['Execute', 'm4', 'The engine runs the whole graph atomically. Tile DMAs stream operands into the 64 banks (tile 0 resident, tile 1 arriving), kernel DMA fills the weight store in 16 chunks, the 8 compute sets accumulate fp16 products, the planar engine applies relu through the ALU, and the result lands in the output IOSurface. No branching, no interrupts, no intermediate reads. Measured: 18.77 TFLOPS fp16 at 4.57 W, exactly 0 mW when idle.']
+  ];
+  var groupOf = [ 's0','s1','s1','s3','s4','s5','s6','s7','s8' ];
+
+  var cur = 0, timer = null;
+  var pipe = document.getElementById('pipe');
+  var dots = document.getElementById('pipe-dots');
+  for (var d = 0; d < steps.length; d++) { var di = document.createElement('i'); di.setAttribute('data-i', d); di.title = steps[d][0]; dots.appendChild(di); }
+
+  // Re-derive the whole visual state from `cur` every time (no incremental
+  // updates), so Prev/Next/dots/keyboard all stay consistent.
+  function render() {
+    // stage groups
+    var gs = pipe.querySelectorAll('.st');
+    for (var g = 0; g < gs.length; g++) gs[g].classList.remove('on', 'done');
+    for (var s = 0; s <= cur; s++) document.getElementById(groupOf[s]).classList.add(s === cur ? 'on' : 'done');
+    if (cur < steps.length) document.getElementById(groupOf[cur]).classList.remove('done'), document.getElementById(groupOf[cur]).classList.add('on');
+    // conditional elements
+    var cond = pipe.querySelectorAll('[data-from],[data-until]');
+    for (var c = 0; c < cond.length; c++) {
+      var from = cond[c].getAttribute('data-from'), until = cond[c].getAttribute('data-until');
+      var show = (from === null || cur >= +from) && (until === null || cur < +until);
+      cond[c].style.opacity = show ? '1' : '0';
+      cond[c].style.pointerEvents = show ? '' : 'none';
+    }
+    // flowing arrows on load / execute
+    var loadPaths = ['p-hwx-cache','p-cache-iokit','p-iokit-dart','p-dart-dram'];
+    for (var l = 0; l < loadPaths.length; l++) { var p = document.getElementById(loadPaths[l]); p.classList.toggle('flow', cur === 7); p.setAttribute('marker-end', cur === 7 ? 'url(#pb)' : 'url(#pa)'); }
+    var dma = pipe.querySelectorAll('.dma');
+    for (var m = 0; m < dma.length; m++) { dma[m].classList.toggle('flow', cur >= 7); dma[m].setAttribute('marker-end', cur >= 7 ? 'url(#pb)' : 'url(#pa)'); }
+    // caption + controls
+    document.getElementById('cap-title').textContent = (cur + 1) + '. ' + steps[cur][0];
+    var ev = document.getElementById('cap-ev'); ev.textContent = steps[cur][1] === 'm4' ? 'confirmed on M4' : 'measured on M4 · pass names from the M1 decompile'; ev.className = 'ev ' + steps[cur][1];
+    document.getElementById('cap-body').innerHTML = steps[cur][2];
+    document.getElementById('pipe-pos').textContent = (cur + 1) + ' / ' + steps.length;
+    document.getElementById('pipe-prev').disabled = cur === 0;
+    document.getElementById('pipe-next').disabled = cur === steps.length - 1;
+    var ds = dots.children; for (var k = 0; k < ds.length; k++) ds[k].className = k === cur ? 'on' : (k < cur ? 'done' : '');
+  }
+  function go(n) { cur = Math.max(0, Math.min(steps.length - 1, n)); render(); }
+  function stop() { if (timer) { clearInterval(timer); timer = null; document.getElementById('pipe-play').textContent = 'Play'; } }
+  document.getElementById('pipe-prev').addEventListener('click', function () { stop(); go(cur - 1); });
+  document.getElementById('pipe-next').addEventListener('click', function () { stop(); go(cur + 1); });
+  document.getElementById('pipe-play').addEventListener('click', function () {
+    if (timer) return stop();
+    if (cur === steps.length - 1) go(0);
+    this.textContent = 'Pause';
+    timer = setInterval(function () { if (cur === steps.length - 1) stop(); else go(cur + 1); }, 2600);
+  });
+  dots.addEventListener('click', function (e) { if (e.target.tagName === 'I') { stop(); go(+e.target.getAttribute('data-i')); } });
+  pipe.addEventListener('keydown', function (e) {
+    if (e.key === 'ArrowRight') { stop(); go(cur + 1); e.preventDefault(); }
+    if (e.key === 'ArrowLeft') { stop(); go(cur - 1); e.preventDefault(); }
+  });
+  pipe.setAttribute('tabindex', '0');
+  render();
+})();
+</script>
+<button id="theme-toggle" type="button" aria-label="Toggle dark mode" style="position:fixed;top:14px;right:14px;z-index:20;font:12px 'IBM Plex Mono',monospace;padding:6px 10px;border-radius:3px;border:1px solid var(--border);background:var(--surface);color:var(--fg);cursor:pointer">dark</button>
+<script>
+(function(){var r=document.documentElement,b=document.getElementById('theme-toggle');
+function set(t){r.setAttribute('data-theme',t);b.textContent=t==='dark'?'light':'dark';try{localStorage.setItem('theme',t)}catch(e){}}
+var t='light';try{t=localStorage.getItem('theme')||'light'}catch(e){}set(t);
+b.addEventListener('click',function(){set(r.getAttribute('data-theme')==='dark'?'light':'dark')});})();
+</script>
+</body>
+</html>
