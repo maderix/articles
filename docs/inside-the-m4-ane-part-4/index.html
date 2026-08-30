@@ -498,13 +498,13 @@
 
 <h3>Compute</h3>
 
-<p>The M4 compute array has 8 compute sets. Each compute set has 8 accumulators. Products are fp16. The accumulator is wider than fp16 (its exact width was not measured), and the final output is rounded back to fp16. This means the ANE does not have native int8 multiply-accumulate. Int8 weights are dequantized to fp16 before the MACs fire. The "38 TOPS int8" marketing number counts each fp16 MAC as two int8 operations.</p>
+<p>The M4 compute array has 8 compute sets. Each compute set has 8 accumulators. The default compute path is fp16: products are fp16, the accumulator is wider than fp16 (its exact width was not measured), and the final output is rounded back to fp16. When both weights and activations are int8, the MACs switch to a dual-pack mode that performs two int8 multiply-accumulate operations per cycle, doubling peak throughput from 19 TFLOPS to 38 TOPS. The mode switch is controlled by a compute-configuration word in the Task Descriptor stream (see the int8 section below).</p>
 
 <p>Eight compute sets is what the HAT reports at offset <code>0x238</code>. The IORegistry reports 16 cores for the same device. These are different units of organization, and the mapping from a compiler compute set to a physical core is not exposed anywhere we could read. The ANE clock frequency has not been measured directly either.</p>
 
 <p>The compiler controls the output-channel-group (OCG) size, meaning how many output channels are computed in one pass through the accumulator. The OCG is the smaller of a power-of-two accumulator budget and a format-specific byte cap (32, 16, or 8 bytes depending on weight format). The formula and its constants come straight from the HAT (byte caps at <code>0x388</code>–<code>0x398</code>, per-accumulator tiers at <code>0x3a8</code>–<code>0x3c0</code>).</p>
 
-<div class="key"><b>FINDING</b><span>The multipliers are fp16. Int8 is dequantized before them, so "38 TOPS" is 19 TFLOPS counted twice. The array is 8 compute sets × 8 accumulators; the per-cycle lane width is not in the table.</span></div>
+<div class="key"><b>FINDING</b><span>8 compute sets × 8 accumulators. Default path is fp16 (19 TFLOPS). With W8A8, the MACs dual-pack two int8 ops per cycle (38 TOPS). The per-cycle lane width is not in the HAT.</span></div>
 
 <h3>DMA</h3>
 
@@ -582,65 +582,99 @@
     <text x="220" y="66" text-anchor="end" font-size="10" fill="currentColor">single matmul 1024²</text><rect class="bar" x="230" y="52" width="93.6" height="20" rx="3" fill="var(--chart-a)" fill-opacity=".8" data-tip="single matmul 1024²: 5.2 TFLOPS fp16 · 27% of 19 TFLOPS ceiling"/><text x="329.6" y="66" text-anchor="start" font-size="10" fill="currentColor">5.2</text><text x="220" y="102" text-anchor="end" font-size="10" fill="currentColor">single matmul 2048²</text><rect class="bar" x="230" y="88" width="102.6" height="20" rx="3" fill="var(--chart-a)" fill-opacity=".8" data-tip="single matmul 2048²: 5.7 TFLOPS fp16 · 30% of 19 TFLOPS ceiling"/><text x="338.6" y="102" text-anchor="start" font-size="10" fill="currentColor">5.7</text><text x="220" y="138" text-anchor="end" font-size="10" fill="currentColor">32L conv1x1 512ch 128²</text><rect class="bar" x="230" y="124" width="336.1" height="20" rx="3" fill="var(--chart-a)" fill-opacity=".8" data-tip="32L conv1x1 512ch 128²: 18.67 TFLOPS fp16 · 98% of 19 TFLOPS ceiling"/><text x="572.0600000000001" y="138" text-anchor="start" font-size="10" fill="currentColor">18.67</text><text x="220" y="174" text-anchor="end" font-size="10" fill="currentColor">64L conv1x1 512ch 128²</text><rect class="bar" x="230" y="160" width="337.9" height="20" rx="3" fill="var(--chart-a)" fill-opacity=".8" data-tip="64L conv1x1 512ch 128²: 18.77 TFLOPS fp16 · 99% of 19 TFLOPS ceiling"/><text x="573.86" y="174" text-anchor="start" font-size="10" fill="currentColor">18.77</text><text x="220" y="210" text-anchor="end" font-size="10" fill="currentColor">48L conv1x1 1024ch 64²</text><rect class="bar" x="230" y="196" width="332.1" height="20" rx="3" fill="var(--chart-a)" fill-opacity=".8" data-tip="48L conv1x1 1024ch 64²: 18.45 TFLOPS fp16 · 97% of 19 TFLOPS ceiling"/><text x="568.0999999999999" y="210" text-anchor="start" font-size="10" fill="currentColor">18.45</text>
     <line x1="572.0" y1="40" x2="572.0" y2="236" stroke="var(--fg-secondary)" stroke-dasharray="4 3"/>
     <text x="568.0" y="40" text-anchor="end" font-size="9" fill="var(--fg-secondary)">19 TFLOPS ceiling</text>
-    <text x="568.0" y="52" text-anchor="end" font-size="9" fill="var(--fg-muted)">("38 TOPS" = 19 × 2)</text>
+    <text x="568.0" y="52" text-anchor="end" font-size="9" fill="var(--fg-muted)">W8A8 dual-pack: 38 TOPS</text>
     <text x="410" y="258" text-anchor="middle" font-size="9" fill="var(--fg-muted)">TFLOPS</text>
   </svg>
   <figcaption>One matmul, however large, leaves two thirds of the array idle. A chain of 32 or more conv1x1 layers at 512–1024 channels fills the pipeline and runs within 1.2% of the ceiling.</figcaption>
 </figure>
 
-<p>The hardware ceiling is 19 TFLOPS fp16. Apple markets the ANE as "38 TOPS" by counting each fp16 MAC as two int8 operations.</p>
+<p>The hardware ceiling is 19 TFLOPS in fp16 mode. In W8A8 mode, dual-pack int8 MACs raise the ceiling to 38 TOPS — a real doubling of throughput, not a counting convention.</p>
 
-<h3>INT8: activations, not weights</h3>
+<h3>INT8: dual-pack compute</h3>
 
 <div class="correction">
-<p><strong>Correction from Part 2:</strong> Part 2 reported that int8 quantized models run at the same throughput as fp16 and concluded the ANE dequantizes int8 to fp16. This is half right. Int8 <em>weights</em> buy nothing (1.00x). The speedup comes from int8 <em>activations</em>, controlled by a single DMA configuration bit that tells the engine to move inter-tile data as 1 byte instead of 2. Int8 activation quantization gives 1.85x throughput.</p>
+<p><strong>Correction from Part 2:</strong> Part 2 reported that int8 quantized models run at the same throughput as fp16 and concluded the ANE dequantizes int8 to fp16. Int8 <em>weights alone</em> do buy nothing (1.00x) — the first block of any compiled chain dequantizes them to fp16 before the MACs. But when both weights and activations are int8 (W8A8), two things happen: the MACs switch to a dual-pack mode that performs two int8 operations per cycle, and the DMA engine halves inter-tile transfer width. The combined effect is ~1.95× throughput on deep chains.</p>
 </div>
 
 <div class="table-wrap">
 <table>
-<tr><th>Weights</th><th>Activations</th><th>Speedup</th></tr>
-<tr><td>fp16</td><td>fp16</td><td>baseline</td></tr>
-<tr><td>int8</td><td>fp16</td><td>1.00x</td></tr>
-<tr><td>int8</td><td>int8</td><td>1.85x</td></tr>
+<tr><th>Weights</th><th>Activations</th><th>Measured</th><th>Mechanism</th></tr>
+<tr><td>fp16</td><td>fp16</td><td>baseline</td><td>fp16 MAC, fp16 DMA</td></tr>
+<tr><td>int8</td><td>fp16</td><td>1.00×</td><td>weights dequantized to fp16; MACs stay fp16</td></tr>
+<tr><td>int8</td><td>int8</td><td>1.95×</td><td>dual int8 MAC + halved inter-tile DMA</td></tr>
 </table>
 </div>
 
+<p>The evidence for dual-pack MACs comes from the throughput numbers themselves. The fp16 peak is 18.77 TFLOPS at 98.8% utilization — the pipeline is saturated, with no DMA headroom left to unlock. Yet W8A8 reaches 36.01 TOPS on the same workload, measured with the same FLOPs formula. Exceeding the fp16 compute ceiling is physically impossible through DMA savings alone. The hardware must be producing more multiply-accumulate results per cycle.</p>
+
+<p>The activating mechanism is a compute-configuration word in the Task Descriptor stream. In a W8A8 deep chain, the compiler emits three block types:</p>
+
+<div class="table-wrap">
+<table>
+<tr><th>Block</th><th>Mode word</th><th>DMA config</th><th>Role</th></tr>
+<tr><td>First (block 0)</td><td><code>0x93418005</code></td><td><code>0x80041240</code></td><td>receives fp16 input, dequants weights</td></tr>
+<tr><td>Middle (1 … n-2)</td><td><code>0xb1418005</code></td><td><code>0x80049240</code></td><td>dual int8 MAC, int8 inter-tile DMA</td></tr>
+<tr><td>Last (n-1)</td><td><code>0x91418005</code></td><td>—</td><td>output conversion</td></tr>
+</table>
+</div>
+
+<p>Bits 25 and 29 of the mode word control the input precision. In fp16 chains, every block uses <code>0x93</code> (bit 25 set = fp16 input). In W8A8 middle blocks, the mode switches to <code>0xb1</code> (bit 29 set = int8 input, dual-pack active). The DMA config adds the <code>0x8000</code> bit, halving inter-tile transfer width from 2 bytes to 1. Each W8A8 middle block also carries 4 extra configuration words not present in fp16 blocks.</p>
+
 <figure>
-  <svg viewBox="0 0 640 230" role="img" aria-label="Two paths: int8 weights are dequantized to fp16 before the multiplier so they save nothing; int8 activations halve the bytes moved between tiles through L2, which is the 1.85x">
-    <rect x="0" y="0" width="640" height="230" fill="var(--diagram-bg)" rx="4"/>
-    <defs><marker id="f4a" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><polygon points="0,0 6,3 0,6" fill="var(--diagram-stroke)"/></marker></defs>
-    <text x="320" y="22" text-anchor="middle" font-size="11" font-weight="500" fill="currentColor">Where int8 does and does not help</text>
+  <svg viewBox="0 0 640 290" role="img" aria-label="A W8A8 deep chain: the first block bridges fp16 input to int8 internal representation, middle blocks run dual int8 MACs with halved DMA, and the last block converts back">
+    <rect x="0" y="0" width="640" height="290" fill="var(--diagram-bg)" rx="4"/>
+    <defs><marker id="f4a" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><polygon points="0,0 6,3 0,6" fill="var(--diagram-stroke)"/></marker><marker id="f4b" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><polygon points="0,0 6,3 0,6" fill="var(--accent)"/></marker></defs>
+    <text x="320" y="22" text-anchor="middle" font-size="11" font-weight="500" fill="currentColor">W8A8 deep chain: three block types</text>
 
-    <!-- weights lane -->
-    <text x="24" y="48" text-anchor="start" font-size="11" font-weight="500" fill="currentColor">int8</text><text x="24" y="62" text-anchor="start" font-size="11" font-weight="500" fill="currentColor">weights</text>
-    <rect x="130" y="40" width="110" height="30" rx="3" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/><text x="185" y="59" text-anchor="middle" font-size="10" fill="currentColor">weight store</text>
-    <line x1="240" y1="55" x2="268" y2="55" stroke="var(--diagram-stroke)" marker-end="url(#f4a)"/>
-    <rect x="270" y="40" width="110" height="30" rx="3" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/><text x="325" y="59" text-anchor="middle" font-size="10" fill="currentColor">dequant → fp16</text>
-    <line x1="380" y1="55" x2="408" y2="55" stroke="var(--diagram-stroke)" marker-end="url(#f4a)"/>
-    <rect x="410" y="40" width="110" height="30" rx="3" fill="var(--grp-b)" fill-opacity=".15" stroke="var(--grp-b)"/><text x="465" y="59" text-anchor="middle" font-size="10" fill="currentColor">fp16 MAC</text>
-    <text x="616" y="59" text-anchor="end" font-size="12" font-weight="500" fill="currentColor">1.00×</text>
-    <text x="130" y="86" text-anchor="start" font-size="9.5" fill="var(--fg-muted)">the multiplier never sees int8 · half the bytes at rest, same bytes in the datapath</text>
+    <!-- Block 0 -->
+    <text x="24" y="56" text-anchor="start" font-size="10" font-weight="500" fill="currentColor">block 0</text>
+    <text x="24" y="70" text-anchor="start" font-size="9" fill="var(--fg-muted)">mode 0x93</text>
+    <rect x="130" y="42" width="80" height="34" rx="3" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/><text x="170" y="63" text-anchor="middle" font-size="9.5" fill="currentColor">fp16 input</text>
+    <line x1="210" y1="59" x2="238" y2="59" stroke="var(--diagram-stroke)" marker-end="url(#f4a)"/>
+    <rect x="240" y="42" width="90" height="34" rx="3" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/><text x="285" y="57" text-anchor="middle" font-size="9.5" fill="currentColor">dequant wt</text><text x="285" y="69" text-anchor="middle" font-size="9.5" fill="currentColor">→ fp16</text>
+    <line x1="330" y1="59" x2="358" y2="59" stroke="var(--diagram-stroke)" marker-end="url(#f4a)"/>
+    <rect x="360" y="42" width="90" height="34" rx="3" fill="var(--grp-b)" fill-opacity=".15" stroke="var(--grp-b)"/><text x="405" y="63" text-anchor="middle" font-size="9.5" fill="currentColor">fp16 MAC</text>
+    <line x1="450" y1="59" x2="478" y2="59" stroke="var(--diagram-stroke)" marker-end="url(#f4a)"/>
+    <rect x="480" y="42" width="80" height="34" rx="3" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/><text x="520" y="63" text-anchor="middle" font-size="9.5" fill="currentColor">→ int8 out</text>
+    <text x="616" y="63" text-anchor="end" font-size="11" font-weight="500" fill="var(--fg-muted)">1×</text>
 
-    <line x1="24" y1="102" x2="616" y2="102" stroke="var(--border)"/>
+    <line x1="24" y1="94" x2="616" y2="94" stroke="var(--border)"/>
 
-    <!-- activations lane -->
-    <text x="24" y="124" text-anchor="start" font-size="11" font-weight="500" fill="currentColor">int8</text><text x="24" y="138" text-anchor="start" font-size="11" font-weight="500" fill="currentColor">activations</text>
-    <rect x="130" y="116" width="90" height="30" rx="3" fill="var(--grp-b)" fill-opacity=".15" stroke="var(--grp-b)"/><text x="175" y="135" text-anchor="middle" font-size="10" fill="currentColor">tile n</text>
-    <line x1="220" y1="131" x2="298" y2="131" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#f4a)"/>
-    <rect x="300" y="116" width="90" height="30" rx="3" fill="var(--grp-a)" fill-opacity=".15" stroke="var(--grp-a)"/><text x="345" y="135" text-anchor="middle" font-size="10" fill="currentColor">L2 / SRAM</text>
-    <line x1="390" y1="131" x2="468" y2="131" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#f4a)"/>
-    <rect x="470" y="116" width="90" height="30" rx="3" fill="var(--grp-b)" fill-opacity=".15" stroke="var(--grp-b)"/><text x="515" y="135" text-anchor="middle" font-size="10" fill="currentColor">tile n+1</text>
-    <text x="616" y="135" text-anchor="end" font-size="12" font-weight="500" fill="currentColor">1.85×</text>
-    <!-- packets -->
-    <rect x="232" y="150" width="6" height="10" fill="var(--fg-muted)"/><rect x="240" y="150" width="6" height="10" fill="var(--fg-muted)"/><rect x="248" y="150" width="6" height="10" fill="var(--fg-muted)"/><rect x="256" y="150" width="6" height="10" fill="var(--fg-muted)"/><rect x="264" y="150" width="6" height="10" fill="var(--fg-muted)"/><rect x="272" y="150" width="6" height="10" fill="var(--fg-muted)"/><rect x="280" y="150" width="6" height="10" fill="var(--fg-muted)"/><rect x="288" y="150" width="6" height="10" fill="var(--fg-muted)"/><text x="300" y="159" text-anchor="start" font-size="9" fill="var(--fg-muted)">fp16: 2 B/elem</text>
-    <rect x="232" y="166" width="6" height="5" fill="var(--accent)"/><rect x="240" y="166" width="6" height="5" fill="var(--accent)"/><rect x="248" y="166" width="6" height="5" fill="var(--accent)"/><rect x="256" y="166" width="6" height="5" fill="var(--accent)"/><rect x="264" y="166" width="6" height="5" fill="var(--accent)"/><rect x="272" y="166" width="6" height="5" fill="var(--accent)"/><rect x="280" y="166" width="6" height="5" fill="var(--accent)"/><rect x="288" y="166" width="6" height="5" fill="var(--accent)"/><text x="300" y="173" text-anchor="start" font-size="9" fill="var(--accent)">int8: 1 B/elem · DMA config bit 0x8000</text>
-    <text x="130" y="196" text-anchor="start" font-size="9.5" fill="var(--fg-muted)">the only thing that changes is the width of the inter-tile transfer · the MACs still run fp16</text>
-    <text x="130" y="212" text-anchor="start" font-size="9.5" fill="var(--fg-muted)">cost: 12.25 W at 36 TOPS vs 4.57 W at 18.8 TFLOPS → less efficient per op, more per second</text>
+    <!-- Middle blocks -->
+    <text x="24" y="124" text-anchor="start" font-size="10" font-weight="500" fill="var(--accent)">blocks 1…n-2</text>
+    <text x="24" y="138" text-anchor="start" font-size="9" fill="var(--accent)">mode 0xb1</text>
+    <rect x="130" y="110" width="80" height="34" rx="3" fill="var(--accent)" fill-opacity=".12" stroke="var(--accent)"/><text x="170" y="131" text-anchor="middle" font-size="9.5" fill="currentColor">int8 input</text>
+    <line x1="210" y1="127" x2="238" y2="127" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#f4b)"/>
+    <rect x="240" y="110" width="90" height="34" rx="3" fill="var(--accent)" fill-opacity=".12" stroke="var(--accent)"/><text x="285" y="125" text-anchor="middle" font-size="9.5" fill="currentColor">int8 wt</text><text x="285" y="137" text-anchor="middle" font-size="9.5" fill="currentColor">+ int8 act</text>
+    <line x1="330" y1="127" x2="358" y2="127" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#f4b)"/>
+    <rect x="360" y="110" width="90" height="34" rx="3" fill="var(--accent)" fill-opacity=".15" stroke="var(--accent)" stroke-width="1.5"/><text x="405" y="125" text-anchor="middle" font-size="9.5" font-weight="500" fill="currentColor">dual int8</text><text x="405" y="137" text-anchor="middle" font-size="9.5" font-weight="500" fill="currentColor">MAC × 2</text>
+    <line x1="450" y1="127" x2="478" y2="127" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#f4b)"/>
+    <rect x="480" y="110" width="80" height="34" rx="3" fill="var(--accent)" fill-opacity=".12" stroke="var(--accent)"/><text x="520" y="131" text-anchor="middle" font-size="9.5" fill="currentColor">int8 out</text>
+    <text x="616" y="131" text-anchor="end" font-size="11" font-weight="500" fill="var(--accent)">2×</text>
+    <!-- DMA annotation -->
+    <rect x="216" y="154" width="5" height="5" fill="var(--accent)"/><rect x="223" y="154" width="5" height="5" fill="var(--accent)"/><rect x="230" y="154" width="5" height="5" fill="var(--accent)"/><text x="240" y="160" text-anchor="start" font-size="8.5" fill="var(--accent)">inter-tile DMA: 1 B/elem (0x80049240)</text>
+    <text x="130" y="178" text-anchor="start" font-size="9" fill="var(--fg-muted)">both compute and DMA run at 2× · consecutive int8 layers stay in int8 without degradation</text>
+
+    <line x1="24" y1="194" x2="616" y2="194" stroke="var(--border)"/>
+
+    <!-- Last block -->
+    <text x="24" y="224" text-anchor="start" font-size="10" font-weight="500" fill="currentColor">block n-1</text>
+    <text x="24" y="238" text-anchor="start" font-size="9" fill="var(--fg-muted)">mode 0x91</text>
+    <rect x="130" y="210" width="80" height="34" rx="3" fill="var(--accent)" fill-opacity=".12" stroke="var(--accent)"/><text x="170" y="231" text-anchor="middle" font-size="9.5" fill="currentColor">int8 input</text>
+    <line x1="210" y1="227" x2="358" y2="227" stroke="var(--diagram-stroke)" marker-end="url(#f4a)"/>
+    <rect x="360" y="210" width="90" height="34" rx="3" fill="var(--grp-b)" fill-opacity=".15" stroke="var(--grp-b)"/><text x="405" y="231" text-anchor="middle" font-size="9.5" fill="currentColor">output MAC</text>
+    <line x1="450" y1="227" x2="478" y2="227" stroke="var(--diagram-stroke)" marker-end="url(#f4a)"/>
+    <rect x="480" y="210" width="80" height="34" rx="3" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/><text x="520" y="231" text-anchor="middle" font-size="9.5" fill="currentColor">fp16 out</text>
+
+    <text x="130" y="268" text-anchor="start" font-size="9" fill="var(--fg-muted)">measured peak: 36.01 TOPS W8A8 (94.8% of 38 TOPS ceiling) vs 18.77 TFLOPS fp16 (98.8% of 19)</text>
+    <text x="130" y="282" text-anchor="start" font-size="9" fill="var(--fg-muted)">power: 12.25 W at 36 TOPS vs 4.57 W at 18.8 TFLOPS → less efficient per op, more throughput per second</text>
   </svg>
-  <figcaption>Quantizing the weights alone changes nothing the multiplier can see. Quantizing the activations halves every transfer between tiles, and on a 128-layer chain that is the whole 1.85×.</figcaption>
+  <figcaption>A W8A8 chain has three block types. The first bridges fp16 input to the int8 internal format. Middle blocks run dual int8 MACs at 2× throughput with halved inter-tile DMA. The last block converts back to fp16. Int8 weights alone leave the first block in fp16 mode with nothing changed downstream — that is why W8-only measures 1.00×.</figcaption>
 </figure>
 
-<div class="key"><b>FINDING</b><span>Int8 weights: 1.00×. Int8 activations: 1.85×. The speedup is one DMA bit that halves inter-tile traffic; the MACs never see int8.</span></div>
+<p>Int8 weights alone (W8 without A8) produce no speedup because the chain never leaves the first block's fp16 mode. The weight data is smaller in memory, but the dequantize step converts it to fp16 before the MAC, and all subsequent blocks run in fp16 mode with fp16 inter-tile DMA. The dual-pack mode requires int8 on both sides of the multiply.</p>
+
+<div class="key"><b>FINDING</b><span>W8A8 activates dual-pack int8 MACs (2 ops/cycle) via TD mode word <code>0xb1</code>, plus halved inter-tile DMA via config bit <code>0x8000</code>. The 38 TOPS ceiling is real silicon throughput. W8-only = 1.00× because it never leaves fp16 compute mode.</span></div>
 
 <h3>Power and efficiency</h3>
 
@@ -653,7 +687,7 @@
 </table>
 </div>
 
-<p>The ANE has hard power gating: exactly 0 mW at idle, instant on. FP16 is the more power-efficient mode per operation. W8A8 draws 2.7x the power for 1.9x the throughput. Int8 activations buy throughput and SRAM footprint, not energy efficiency.</p>
+<p>The ANE has hard power gating: exactly 0 mW at idle, instant on. FP16 is the more power-efficient mode per operation. W8A8 draws 2.7× the power for 1.95× the throughput — the dual-pack MACs and doubled DMA activity cost energy. W8A8 buys throughput and SRAM footprint at the expense of efficiency per operation.</p>
 
 <h3>Geometry matters</h3>
 
@@ -760,7 +794,7 @@
 
 <p>Apple announced the M6 on August 25, 2026, built on TSMC's 2nm process. The headline change for the ANE: the M6 has two of them. Apple calls it a "Dual 16-core Neural Engine" and claims 2x peak compute over previous generations. System frameworks can use both engines simultaneously.</p>
 
-<p>Apple did not publish a TOPS number for the M6 ANE. Based on what we know: if each engine matches the M4's 19 TFLOPS fp16, the dual configuration would deliver 38 TFLOPS fp16 (76 TOPS by Apple's int8 marketing math). Whether the two engines share SRAM, coordinate DMA, or simply operate as independent units with separate memory pools is not disclosed. The DRAM bandwidth increased to 170 GB/s (from 120 GB/s on M4), a 42% increase that would partially offset the bandwidth pressure of running two engines against the same memory.</p>
+<p>Apple did not publish a TOPS number for the M6 ANE. Based on what we know: if each engine matches the M4's 19 TFLOPS fp16, the dual configuration would deliver 38 TFLOPS fp16 (76 TOPS in W8A8 dual-pack mode). Whether the two engines share SRAM, coordinate DMA, or simply operate as independent units with separate memory pools is not disclosed. The DRAM bandwidth increased to 170 GB/s (from 120 GB/s on M4), a 42% increase that would partially offset the bandwidth pressure of running two engines against the same memory.</p>
 
 <figure>
   <svg viewBox="0 0 640 250" role="img" aria-label="M4 with one 16-core ANE on 120 GB/s DRAM beside M6 with two 16-core ANEs on 170 GB/s DRAM; dashed links mark what Apple has not said: shared SRAM, one or two dispatch paths, and whether one graph can span both">
@@ -791,7 +825,7 @@
     <text x="470" y="158" text-anchor="middle" font-size="11" fill="currentColor">DRAM · 170 GB/s (+42%)</text><text x="470" y="171" text-anchor="middle" font-size="9" fill="var(--fg-muted)">Apple: "2× peak compute" · no TOPS figure published</text>
     <text x="470" y="196" text-anchor="middle" font-size="10" fill="var(--fg-secondary)">open: shared SRAM? one dispatch or two?</text>
     <text x="470" y="210" text-anchor="middle" font-size="10" fill="var(--fg-secondary)">can one compiled graph span both engines?</text>
-    <text x="470" y="232" text-anchor="middle" font-size="9.5" fill="var(--fg-muted)">expected if independent: 38 TFLOPS fp16 · "76 TOPS"</text>
+    <text x="470" y="232" text-anchor="middle" font-size="9.5" fill="var(--fg-muted)">expected if independent: 38 TFLOPS fp16 · 76 TOPS W8A8</text>
   </svg>
   <figcaption>What Apple has said about the M6 Neural Engine fits in one box: two of them, twice the peak, both usable at once by system frameworks. The dashed link and the three questions under it are what a HAT dump and a dispatch-floor measurement on real hardware would settle.</figcaption>
 </figure>
@@ -814,7 +848,7 @@
 
 <p><strong>No wide issue.</strong> Eight independent adds were 1.008x faster than eight chained adds. The engine does not execute independent operations in parallel across compute sets in the configurations we tested. The compiler allows one MAC operation and one planar-engine operation to co-issue when they are independent; same-engine overlap is rejected.</p>
 
-<p><strong>No FP8.</strong> The E4M3 capability gate in the HAT is zero. The compute path is fp16.</p>
+<p><strong>No FP8.</strong> The E4M3 capability gate in the HAT is zero. The compute path is fp16 or dual-pack int8; no intermediate precision is available.</p>
 
 <p><strong>No branching.</strong> The ANE has no conditional execution. Every operation in a compiled graph runs every time. Dynamic shapes are supported only through procedure indices (selecting among pre-compiled shapes) or runtime-variable dimension bindings in the dispatch descriptor.</p>
 
@@ -822,7 +856,7 @@
 
 <hr>
 
-<p>The M4 ANE is a fixed-function fp16 matrix accelerator with 8 compute sets, 64 banks of on-chip SRAM, and a compiler-managed streaming model that tiles work around a 2 MiB per-operand budget. It reaches 19 TFLOPS fp16 at under 5 watts and draws exactly 0 mW when idle. Its constraints (no branching, fixed op set, fp16-only MACs, 90 µs dispatch floor) are the price of that efficiency. The hardware is not complicated. The complexity is in the software stack above it, which Apple chose to keep private.</p>
+<p>The M4 ANE is a fixed-function matrix accelerator with 8 compute sets, 64 banks of on-chip SRAM, and a compiler-managed streaming model that tiles work around a 2 MiB per-operand budget. It reaches 19 TFLOPS fp16 and 38 TOPS W8A8 (dual-pack int8) at under 5 watts fp16 and draws exactly 0 mW when idle. Its constraints (no branching, fixed op set, two precision modes, 90 µs dispatch floor) are the price of that efficiency. The hardware is not complicated. The complexity is in the software stack above it, which Apple chose to keep private.</p>
 
 <p>The M6 doubles the engine count. Whether that is two independent accelerators or a coordinated pair remains to be measured.</p>
 
