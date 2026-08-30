@@ -152,15 +152,17 @@
 
 <div class="byline">manjeet singh · August 2026 · <span style="color:var(--accent)">Substack version coming soon</span></div>
 
-<p>Parts <a href="../inside-the-m4-ane-part-1/">1</a>, <a href="../inside-the-m4-ane-part-2/">2</a>, and <a href="../inside-the-m4-ane-part-3/">3</a> of this series treated the ANE as a tool. We compiled models to it, measured how fast they ran, and trained a transformer on it. But we never described the machine itself. What is the ANE as a piece of silicon? How is it organized? What can it compute, and why does it behave the way we measured?</p>
+<p>Parts <a href="../inside-the-m4-ane-part-1/">1</a>, <a href="../inside-the-m4-ane-part-2/">2</a>, and <a href="../inside-the-m4-ane-part-3/">3</a> treated the ANE as a tool: compiling models, measuring throughput, and training a transformer. This part describes the M4 ANE itself, from the host interface and compiled program format to SRAM, DMA, compute, and measured limits.</p>
 
-<p>Most of what follows is our own reverse engineering on an M4, done across Parts 1–3 and the months since: the private API surface below CoreML and the in-memory compile path; the compiled program format (a Mach-O with magic <code>0xBEEFFACE</code>) decoded down to individual field offsets, tiling formulas, and the activation lookup table; from-scratch emitters that produce byte-identical binaries and run at 98.8% of peak without Apple's compiler; the evaluation path traced through the framework's vtable to the kernel; the int8, geometry, dispatch-floor, TD-count, and compute/DMA-overlap measurements; and a 2,360-byte hardware parameter table pulled out of the live compiler with a debugger. Where we lean on someone else, it is named: Bryngelson's 302-page reference (A11 through M5, with the M1 compiler decompiled) supplies the compiler's internal pass names and the field naming for that parameter table, and the Orion paper catalogs MIL-level constraints for LLM work. Some numbers in Parts 1 and 2 were wrong; the corrections are marked inline.</p>
+<p>The account is based primarily on our reverse engineering of an M4. We traced the private API below CoreML, recovered the in-memory compile and evaluation paths, decoded the <code>0xBEEFFACE</code> Mach-O program format, mapped individual Task Descriptor fields, derived the tiling formulas, and recovered the activation lookup-table format. From-scratch emitters produce byte-identical programs and run at 98.8% of measured peak throughput. Additional experiments cover int8 execution, tensor geometry, dispatch latency, Task Descriptor counts, and compute/DMA overlap. We also extracted the compiler's 2,360-byte hardware parameter table from a live process with LLDB.</p>
+
+<p>Bryngelson's reference for A11 through M5 supplies names for the compiler passes and fields in that parameter table. The Orion paper documents MIL-level constraints relevant to LLM workloads. Measurements and claims taken from those sources are identified where they appear.</p>
 
 <hr>
 
 <h2>The Pipeline, End to End</h2>
 
-<p>One program, traced from text to silicon. Step through it: each stage draws what the compiler or the hardware does to the data at that point.</p>
+<p>The diagram follows one program from MIL text through compilation, loading, dispatch, and execution on the M4 ANE.</p>
 
 <div class="pipe" id="pipe">
   <div class="pipe-ctl">
@@ -392,7 +394,7 @@
 
 <h2>What the ANE Is</h2>
 
-<p>The Apple Neural Engine is a fixed-function matrix accelerator built into every Apple system-on-chip since the A11 (2017). It sits on the same die as the CPU and GPU, shares the same unified DRAM, and draws from the same power budget. Apple builds it in volume and documents almost none of it. There is no public instruction set, no driver interface, no way to confirm a computation ran on it. The public API is CoreML, where the engine is one placement option behind an opaque scheduler.</p>
+<p>The Apple Neural Engine is a fixed-function matrix accelerator included in Apple systems-on-chip since the A11 in 2017. It shares unified DRAM and the SoC power budget with the CPU and GPU. Apple exposes it through CoreML as one target behind the framework's scheduler. The instruction format, driver interface, and execution counters are private.</p>
 
 <figure>
   <svg viewBox="0 0 640 300" role="img" aria-label="One M4 die: CPU, GPU and ANE each read and write the same IOSurface in unified DRAM; the ANE alone pays a 90 microsecond dispatch per call">
@@ -437,16 +439,16 @@
     <text x="320" y="264" text-anchor="middle" font-size="11" fill="currentColor">Unified DRAM · up to 32 GB</text>
     <text x="320" y="278" text-anchor="middle" font-size="9" fill="var(--fg-muted)">120 GB/s, shared by all three · the ANE streams anything over 2 MiB through this</text>
   </svg>
-  <figcaption>What the three engines have in common is the memory, not the programming model. A tensor produced by the GPU can be handed to the ANE by mapping the same IOSurface; the cost the ANE adds is a fixed ≈90 µs per submission.</figcaption>
+  <figcaption>The CPU, GPU, and ANE use different programming models but share unified memory. A GPU-produced tensor can reach the ANE through another mapping of the same IOSurface. Each ANE submission adds approximately 90 µs of host-side dispatch time.</figcaption>
 </figure>
 
-<p>The ANE is not a general-purpose processor. It has no instruction pointer in the traditional sense, no branch instructions, no loops, no dynamic control flow. You submit a compiled graph and the engine runs the entire thing as one atomic operation. You cannot pause it, step through layers, or inspect intermediate values. Input and output happen through IOSurfaces (shared memory regions that the CPU, GPU, and ANE can all access without copying).</p>
+<p>The ANE executes complete compiled graphs as atomic operations. Its program model exposes no branch instructions, loops, or dynamic control flow, and execution cannot be paused to inspect intermediate values. Inputs and outputs use IOSurfaces, shared-memory regions that the CPU, GPU, and ANE can map without copying.</p>
 
-<p>On M4, the ANE has an internal codename of <strong>H16G</strong>. The IORegistry identifies it as <code>AppleH16ANEInterface</code> with architecture <code>h16g</code>, version 192, and 16 registered cores. Previous generations: H11 (A11), H13 (M1), H14 (M2), H15 (M3). The "G" suffix likely indicates the Mac/iPad class (as opposed to phone or watch variants).</p>
+<p>The M4 ANE has the internal codename <strong>H16G</strong>. IORegistry identifies it as <code>AppleH16ANEInterface</code> with architecture <code>h16g</code>, version 192, and 16 registered cores. The meaning of the "G" suffix has not been confirmed.</p>
 
 <h2>Inside the Engine</h2>
 
-<p>Our picture of the engine's internals comes from three directions. From the outside: hundreds of compiled programs diffed byte by byte, which is how the task-descriptor fields, the tiling rule, the weight-streaming stride, and the lookup-table format were recovered, each confirmed by emitting binaries from scratch and running them. From the compiler: a 2,360-byte parameter table (the Hardware Abstraction Table, or HAT) that we pulled out of the live M4 compiler process with LLDB by calling <code>ZinIrHalH16g::GetParams()</code>; it holds every number the scheduler reads. And from the Bryngelson decompilation of the M1 compiler, which gave us the names of the internal passes and the meaning of the HAT's fields so the M4 values could be read rather than guessed. Every number below is an M4 reading.</p>
+<p>The internal model comes from three sources. First, we compared hundreds of compiled programs byte by byte, recovered the Task Descriptor fields, tiling rules, weight-streaming stride, and lookup-table format, then checked those results with binaries emitted from scratch. Second, we called <code>ZinIrHalH16g::GetParams()</code> inside the live M4 compiler process and extracted its 2,360-byte Hardware Abstraction Table (HAT). Third, Bryngelson's compiler analysis supplies names for the internal passes and HAT fields. The values reported below were read from the M4.</p>
 
 <figure>
   <svg viewBox="0 0 640 316" role="img" aria-label="Two timelines: an operand under 2 MiB is loaded whole and then computed, serialized; an operand over 2 MiB is cut into tiles and each tile's DMA overlaps the previous tile's compute">
@@ -481,7 +483,7 @@
     <rect x="24.0" y="284" width="7.5" height="12" rx="1" fill="var(--accent)" fill-opacity=".8"/><rect x="70.5" y="284" width="7.5" height="12" rx="1" fill="var(--accent)" fill-opacity=".8"/><rect x="117.0" y="284" width="7.5" height="12" rx="1" fill="var(--accent)" fill-opacity=".8"/><rect x="163.5" y="284" width="7.5" height="12" rx="1" fill="var(--accent)" fill-opacity=".8"/><rect x="210.0" y="284" width="7.5" height="12" rx="1" fill="var(--accent)" fill-opacity=".8"/><rect x="256.5" y="284" width="7.5" height="12" rx="1" fill="var(--accent)" fill-opacity=".8"/><rect x="303.0" y="284" width="7.5" height="12" rx="1" fill="var(--accent)" fill-opacity=".8"/><rect x="349.5" y="284" width="7.5" height="12" rx="1" fill="var(--accent)" fill-opacity=".8"/>
     <text x="616" y="309" text-anchor="end" font-size="9" fill="var(--fg-muted)">8 rows, stride coprime with 64 → 8 different banks, no conflict</text>
   </svg>
-  <figcaption>The compiler's memory decision in one picture. Below 2 MiB per operand the load and the compute serialize; above it the operand is tiled and the DMA of the next tile hides under the current tile's compute. The compiler reads the threshold from the HAT, and it is the boundary where the resident-versus-streamed decision flips.</figcaption>
+  <figcaption>The compiler reads the 2 MiB threshold from the HAT. Smaller operands are loaded before compute begins. Larger operands are tiled, allowing the next tile's DMA transfer to overlap computation on the current tile.</figcaption>
 </figure>
 
 <h3>SRAM</h3>
@@ -490,7 +492,7 @@
 
 <p>The streaming threshold is 2 MiB per operand (not per operation, and not a sum of all operands). This value comes from the HAT at offset <code>0x1b8</code>. Below 2 MiB, an operand can be fully resident before compute starts. Above it, the compiler splits the operand into tiles and double-buffers them: while tile N computes, tile N+1 loads.</p>
 
-<p>In Part 2 we measured a throughput cliff around 24-32 MB and attributed it to total SRAM size. The HAT tells a more precise story: the 2 MiB boundary is where the compiler switches from resident to streamed mode for each operand. Performance above that boundary depends on how well the DMA engine can overlap tile loads with compute, not on a hard capacity wall.</p>
+<p>The compiler switches each operand from resident to streamed mode at 2 MiB. The throughput change previously observed around 24–32 MB reflects the behavior of tiled, streamed operands rather than a single total-SRAM capacity boundary. Performance beyond the threshold depends on overlap between tile loads and compute.</p>
 
 <p>Weights have their own budget. Up to 64 KiB of weights stay resident on-chip (the "kernel-coefficient store"). Weights up to 16 MiB can be streamed through in 16 DMA chunks. The compiler divides the weight matrix into 16 pieces regardless of total size and loads them sequentially.</p>
 
@@ -498,9 +500,9 @@
 
 <h3>Compute</h3>
 
-<p>The M4 compute array has 8 compute sets. Each compute set has 8 accumulators. The default compute path is fp16: products are fp16, the accumulator is wider than fp16 (its exact width was not measured), and the final output is rounded back to fp16. When both weights and activations are int8, the MACs switch to a dual-pack mode that performs two int8 multiply-accumulate operations per cycle, doubling peak throughput from 19 TFLOPS to 38 TOPS. The mode switch is controlled by a compute-configuration word in the Task Descriptor stream (see the int8 section below).</p>
+<p>The M4 compute array contains 8 compute sets, each with 8 accumulators. FP16 is the default path: products use fp16 inputs, accumulation is wider than fp16 (the exact width has not been measured), and the output is rounded to fp16. W8A8 chains use a packed compute mode in their middle blocks and reach a 38 TOPS ceiling. A compute-configuration word in the Task Descriptor stream selects the mode.</p>
 
-<p>Eight compute sets is what the HAT reports at offset <code>0x238</code>. The IORegistry reports 16 cores for the same device. These are different units of organization, and the mapping from a compiler compute set to a physical core is not exposed anywhere we could read. The ANE clock frequency has not been measured directly either.</p>
+<p>The HAT reports 8 compute sets at offset <code>0x238</code>, while IORegistry reports 16 cores for the device. The mapping between those two units is not exposed in the interfaces we examined. The ANE clock frequency has also not been measured directly.</p>
 
 <p>The compiler controls the output-channel-group (OCG) size, meaning how many output channels are computed in one pass through the accumulator. The OCG is the smaller of a power-of-two accumulator budget and a format-specific byte cap (32, 16, or 8 bytes depending on weight format). The formula and its constants come straight from the HAT (byte caps at <code>0x388</code>–<code>0x398</code>, per-accumulator tiers at <code>0x3a8</code>–<code>0x3c0</code>).</p>
 
@@ -510,13 +512,13 @@
 
 <p>Data moves between DRAM and SRAM through DMA engines. Compiled programs reference three tile-DMA engines and one kernel-DMA engine. The physical engine count and queue depth behind those references have not been measured directly. In our tests, sweeping 2 through 8 independent input planes produced a linear slowdown of ~995 µs per additional plane. No concurrency knee appeared, suggesting the DMA path serializes tile loads in the configurations we tested.</p>
 
-<p>Fused operations avoid the DMA round-trip entirely. When consecutive operations in a compiled graph feed into each other, the compiler marks the intermediate as <code>DMA_INTER</code> instead of <code>DMA_STORE</code> + <code>DMA_LOAD</code>. The data stays in SRAM. This is the single largest optimization the compiler makes: a fused matmul + bias + relu runs 5.7x faster than dispatching the three ops separately. The compute is identical. The saved DRAM round-trips are the entire difference.</p>
+<p>Fused operations keep intermediate values in SRAM. When one operation feeds the next, the compiler emits <code>DMA_INTER</code> instead of <code>DMA_STORE</code> followed by <code>DMA_LOAD</code>. A fused matmul + bias + relu runs 5.7× faster than three separate dispatches because it avoids the intermediate DRAM transfers and two additional dispatches.</p>
 
 <div class="key"><b>FINDING</b><span>Fusion is the compiler's biggest lever: <code>DMA_INTER</code> keeps intermediates in SRAM. matmul + bias + relu fused runs 5.7× faster than the same three ops dispatched one at a time.</span></div>
 
 <h2>What the ANE Computes</h2>
 
-<p>The ANE supports approximately 50 hardware layer types, verified through the <code>ANECompiler.framework</code> validator exports (<code>_ANECValidate*Layer</code>). In practice, the operations that compile and execute fall into five groups.</p>
+<p>The <code>ANECompiler.framework</code> validator exports (<code>_ANECValidate*Layer</code>) identify approximately 50 hardware layer types. The operations that compile and execute fall into five groups.</p>
 
 <div class="table-wrap">
 <table>
@@ -549,19 +551,19 @@
 
 <p>Dispatch from the host goes through the <code>aned</code> daemon via XPC for compile and load, but evaluation takes a direct path through <code>ANEServicesProgramProcessRequestDirect</code> without the daemon. The host posts a mailbox command, the engine runs the entire graph, and the output appears in the designated IOSurface.</p>
 
-<p>Every evaluation, regardless of computation size, costs approximately <strong>90 µs</strong> of host time (XPC round-trip + IOKit setup). This floor is CPU-bound and does not change with SoC power state. Any operation completing in under ~1 ms spends a large fraction of wall-clock time in dispatch overhead. This is why operation fusion matters so much: fewer dispatches per forward pass means less time in the 90 µs tax.</p>
+<p>Each evaluation adds approximately <strong>90 µs</strong> of host time for the XPC round trip and IOKit setup. The floor is CPU-bound and does not change with SoC power state. For operations that complete in under ~1 ms, dispatch occupies a large fraction of wall-clock time. Fusion reduces that cost by placing more work in each submitted program.</p>
 
 <div class="key"><b>FINDING</b><span>Every evaluation costs ≈90 µs of host time before the engine does anything. Under ~1 ms of work, dispatch dominates; the fix is fewer, larger programs.</span></div>
 
 <h2>Performance</h2>
 
 <div class="correction">
-<p><strong>Corrections from Parts 1 and 2:</strong> The power figure of 2.79 W and efficiency of 6.6 TFLOPS/W reported in Part 2 do not reproduce. Those measurements were taken with <code>pmset lowpowermode</code> enabled without our knowledge (it persists across reboots). The corrected M4 peak power is 4.57 W at fp16 peak, giving 4.1 TFLOPS/W. All numbers below use the corrected measurements from August 2026.</p>
+<p><strong>Measurement note:</strong> The M4 reaches 4.57 W at fp16 peak, or 4.1 TFLOPS/W. Earlier measurements taken with persistent <code>pmset lowpowermode</code> enabled reported 2.79 W and 6.6 TFLOPS/W. All results below use the August 2026 measurements without low-power mode.</p>
 </div>
 
 <h3>Throughput</h3>
 
-<p>Peak throughput requires deep operation chains (32-64 layers) at the right channel/spatial balance (512-1024 channels, 64²-128² spatial). A single matmul uses roughly 30% of peak because the 8-core pipeline is not fully occupied. A 64-layer conv1x1 chain fills the pipeline and reaches 98.8%.</p>
+<p>Peak throughput requires deep operation chains of 32–64 layers and a channel/spatial balance around 512–1024 channels at 64²–128² spatial dimensions. A single matmul reaches roughly 30% of peak. A 64-layer conv1x1 chain keeps the compute pipeline occupied and reaches 98.8%.</p>
 
 <div class="table-wrap">
 <table>
@@ -585,30 +587,28 @@
     <text x="568.0" y="52" text-anchor="end" font-size="9" fill="var(--fg-muted)">W8A8 dual-pack: 38 TOPS</text>
     <text x="410" y="258" text-anchor="middle" font-size="9" fill="var(--fg-muted)">TFLOPS</text>
   </svg>
-  <figcaption>One matmul, however large, leaves two thirds of the array idle. A chain of 32 or more conv1x1 layers at 512–1024 channels fills the pipeline and runs within 1.2% of the ceiling.</figcaption>
+  <figcaption>Single matmuls reach 5.2–5.7 TFLOPS. Conv1x1 chains of 32 layers or more at 512–1024 channels reach 18.45–18.77 TFLOPS, within 1.2% of the measured fp16 ceiling.</figcaption>
 </figure>
 
-<p>The hardware ceiling is 19 TFLOPS in fp16 mode. In W8A8 mode, dual-pack int8 MACs raise the ceiling to 38 TOPS — a real doubling of throughput, not a counting convention.</p>
+<p>The measured ceilings are 19 TFLOPS in fp16 mode and 38 TOPS in packed W8A8 mode.</p>
 
-<h3>INT8: dual-pack compute</h3>
+<h3>INT8: packed compute</h3>
 
-<div class="correction">
-<p><strong>Correction from Part 2:</strong> Part 2 reported that int8 quantized models run at the same throughput as fp16 and concluded the ANE dequantizes int8 to fp16. Int8 <em>weights alone</em> do buy nothing (1.00x) — the first block of any compiled chain dequantizes them to fp16 before the MACs. But when both weights and activations are int8 (W8A8), two things happen: the MACs switch to a dual-pack mode that performs two int8 operations per cycle, and the DMA engine halves inter-tile transfer width. The combined effect is ~1.95× throughput on deep chains.</p>
-</div>
+<p>The M4 ANE has two measured compute paths: fp16 and packed W8A8. The fp16 path reaches 18.77 TFLOPS. When both weights and intermediate activations remain int8, deep operation chains reach 36.01 TOPS.</p>
 
 <div class="table-wrap">
 <table>
 <tr><th>Weights</th><th>Activations</th><th>Measured</th><th>Mechanism</th></tr>
-<tr><td>fp16</td><td>fp16</td><td>baseline</td><td>fp16 MAC, fp16 DMA</td></tr>
-<tr><td>int8</td><td>fp16</td><td>1.00×</td><td>weights dequantized to fp16; MACs stay fp16</td></tr>
-<tr><td>int8</td><td>int8</td><td>1.95×</td><td>dual int8 MAC + halved inter-tile DMA</td></tr>
+<tr><td>fp16</td><td>fp16</td><td>1.00× baseline</td><td>fp16 compute, 2-byte inter-layer transfers</td></tr>
+<tr><td>int8</td><td>fp16</td><td>1.00×</td><td>weights expanded before compute; chain remains fp16</td></tr>
+<tr><td>int8</td><td>int8</td><td>up to 1.95×</td><td>packed int8 compute, 1-byte inter-layer transfers</td></tr>
 </table>
 </div>
 
-<p>The evidence for dual-pack MACs comes from the throughput numbers themselves. The fp16 peak is 18.77 TFLOPS at 98.8% utilization — the pipeline is saturated, with no DMA headroom left to unlock. Yet W8A8 reaches 36.01 TOPS on the same workload, measured with the same FLOPs formula. Exceeding the fp16 compute ceiling is physically impossible through DMA savings alone. The hardware must be producing more multiply-accumulate results per cycle.</p>
+<p>Both modes use the same operation-count formula: <code>2 × channels² × kernel² × spatial² × depth</code>. The fp16 chain reaches 18.77 TFLOPS, or 98.8% of its 19 TFLOPS ceiling. The W8A8 chain reaches 36.01 TOPS, or 94.8% of its 38 TOPS packed-compute ceiling.</p>
 
 <figure>
-  <svg viewBox="0 0 640 392" role="img" aria-label="Paired bar chart of fp16 versus W8A8 throughput across six chain depths. The region above 19 TFLOPS is hatched as unreachable by fp16 multipliers. Three W8A8 bars rise into that region, reaching 36 TOPS against a 38 TOPS dual-pack ceiling.">
+  <svg viewBox="0 0 640 392" role="img" aria-label="Paired bar chart of fp16 and W8A8 throughput across six chain depths. W8A8 reaches 36 TOPS against a 38 TOPS packed-compute ceiling; fp16 reaches 18.5 TFLOPS against a 19 TFLOPS ceiling.">
     <rect x="0" y="0" width="640" height="392" fill="var(--diagram-bg)" rx="4"/>
     <defs>
       <pattern id="int8-hatch" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
@@ -616,8 +616,8 @@
       </pattern>
     </defs>
 
-    <text x="26" y="26" text-anchor="start" font-size="12" font-weight="600" fill="currentColor">W8A8 runs past the fp16 compute ceiling</text>
-    <text x="26" y="43" text-anchor="start" font-size="10" fill="var(--fg-secondary)">Both series scored with the identical FLOPs formula, so the bars are directly comparable.</text>
+    <text x="26" y="26" text-anchor="start" font-size="12" font-weight="600" fill="currentColor">FP16 and W8A8 throughput by chain depth</text>
+    <text x="26" y="43" text-anchor="start" font-size="10" fill="var(--fg-secondary)">Measured conv1x1 throughput using the same operation-count formula</text>
 
     <!-- forbidden band: above 19, y 180.75 up to 60 -->
     <rect x="130" y="60" width="470" height="120.75" fill="url(#int8-hatch)"/>
@@ -635,11 +635,10 @@
 
     <!-- 38 TOPS dual-pack ceiling -->
     <line x1="130" y1="71.5" x2="600" y2="71.5" stroke="var(--chart-b)" stroke-width="1.5" stroke-dasharray="7 4"/>
-    <text x="136" y="67" text-anchor="start" font-size="9.5" font-weight="500" fill="var(--chart-b)">38 TOPS · dual-pack int8 ceiling</text>
+    <text x="136" y="67" text-anchor="start" font-size="9.5" font-weight="500" fill="var(--chart-b)">38 TOPS · W8A8 packed-compute ceiling</text>
 
-    <!-- band caption, in the empty middle-left of the band -->
-    <text x="136" y="95" text-anchor="start" font-size="9.5" font-weight="500" fill="var(--chart-a)">fp16 multipliers cannot produce results in this band</text>
-    <text x="136" y="108" text-anchor="start" font-size="9.5" fill="var(--fg-muted)">no amount of DMA saving raises a compute ceiling</text>
+    <!-- W8A8 operating range above the fp16 ceiling -->
+    <text x="136" y="101" text-anchor="start" font-size="9.5" font-weight="500" fill="var(--chart-a)">W8A8 operating range above the fp16 ceiling</text>
 
     <!-- 19 TFLOPS fp16 ceiling -->
     <line x1="130" y1="180.75" x2="600" y2="180.75" stroke="var(--chart-a)" stroke-width="1.5" stroke-dasharray="7 4"/>
@@ -700,25 +699,25 @@
     <rect x="188" y="341" width="11" height="11" rx="2" fill="var(--chart-b)" fill-opacity=".85"/>
     <text x="205" y="350.5" text-anchor="start" font-size="10" fill="var(--fg-secondary)">W8A8</text>
     <rect x="264" y="341" width="11" height="11" rx="2" fill="url(#int8-hatch)" stroke="var(--chart-a)" stroke-opacity=".35" stroke-width="0.75"/>
-    <text x="281" y="350.5" text-anchor="start" font-size="10" fill="var(--fg-secondary)">unreachable by fp16 multipliers</text>
+    <text x="281" y="350.5" text-anchor="start" font-size="10" fill="var(--fg-secondary)">W8A8 range above fp16</text>
 
     <text x="130" y="374" text-anchor="start" font-size="9" fill="var(--fg-muted)">conv1x1 chains · L=1–32 at 512ch 32² · L=48* at 1024ch 64² · median of 100–400 evals</text>
   </svg>
-  <figcaption>The hatched band is the region an fp16 multiplier array cannot reach: 19 TFLOPS is the ceiling when every MAC produces one product per cycle, and no DMA optimization moves it. Three W8A8 configurations sit inside that band, topping out at 36.0 against the 38 TOPS a dual-pack array predicts. At L=1 the chain is a single tile that never leaves mode <code>0x93</code>, and the two bars match — which is what makes the gap at greater depths attributable to the mode switch rather than to quantization in general.</figcaption>
+  <figcaption>FP16 and W8A8 have similar throughput at a chain depth of one. W8A8 throughput increases as the chain gains quantized middle blocks, reaching 36.01 TOPS at 48 layers. The corresponding fp16 chain reaches 18.45 TFLOPS. The measured ceilings are 19 TFLOPS for fp16 and 38 TOPS for packed W8A8 execution.</figcaption>
 </figure>
 
-<p>The activating mechanism is a compute-configuration word in the Task Descriptor stream. In a W8A8 deep chain, the compiler emits three block types:</p>
+<p>A W8A8 chain contains three block types. The entry block accepts fp16 input and produces the first quantized intermediate. Middle blocks consume int8 activations and pass one-byte results directly to the next layer. The final block converts the result to the requested output format.</p>
 
 <div class="table-wrap">
 <table>
 <tr><th>Block</th><th>Mode word</th><th>DMA config</th><th>Role</th></tr>
-<tr><td>First (block 0)</td><td><code>0x93418005</code></td><td><code>0x80041240</code></td><td>receives fp16 input, dequants weights</td></tr>
-<tr><td>Middle (1 … n-2)</td><td><code>0xb1418005</code></td><td><code>0x80049240</code></td><td>dual int8 MAC, int8 inter-tile DMA</td></tr>
-<tr><td>Last (n-1)</td><td><code>0x91418005</code></td><td>—</td><td>output conversion</td></tr>
+<tr><td>Entry (block 0)</td><td><code>0x93418005</code></td><td><code>0x80041240</code></td><td>fp16 input to quantized intermediate</td></tr>
+<tr><td>Middle (1 … n-2)</td><td><code>0xb1418005</code></td><td><code>0x80049240</code></td><td>packed int8 compute with one-byte transfers</td></tr>
+<tr><td>Output (n-1)</td><td><code>0x91418005</code></td><td>—</td><td>conversion to the output format</td></tr>
 </table>
 </div>
 
-<p>Bits 25 and 29 of the mode word control the input precision. In fp16 chains, every block uses <code>0x93</code> (bit 25 set = fp16 input). In W8A8 middle blocks, the mode switches to <code>0xb1</code> (bit 29 set = int8 input, dual-pack active). The DMA config adds the <code>0x8000</code> bit, halving inter-tile transfer width from 2 bytes to 1. Each W8A8 middle block also carries 4 extra configuration words not present in fp16 blocks.</p>
+<p>The middle-block mode changes from the fp16 form to <code>0xb1</code>. In the streams we examined, bits 25 and 29 track the input-precision mode: fp16 blocks set bit 25, while quantized middle blocks set bit 29. The DMA configuration adds <code>0x8000</code> as the inter-layer width changes from 2 bytes to 1. Each W8A8 middle block also contains 4 configuration words absent from its fp16 counterpart.</p>
 
 <figure>
   <svg viewBox="0 0 640 290" role="img" aria-label="A W8A8 deep chain: the first block bridges fp16 input to int8 internal representation, middle blocks run dual int8 MACs with halved DMA, and the last block converts back">
@@ -747,13 +746,13 @@
     <line x1="210" y1="127" x2="238" y2="127" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#f4b)"/>
     <rect x="240" y="110" width="90" height="34" rx="3" fill="var(--accent)" fill-opacity=".12" stroke="var(--accent)"/><text x="285" y="125" text-anchor="middle" font-size="9.5" fill="currentColor">int8 wt</text><text x="285" y="137" text-anchor="middle" font-size="9.5" fill="currentColor">+ int8 act</text>
     <line x1="330" y1="127" x2="358" y2="127" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#f4b)"/>
-    <rect x="360" y="110" width="90" height="34" rx="3" fill="var(--accent)" fill-opacity=".15" stroke="var(--accent)" stroke-width="1.5"/><text x="405" y="125" text-anchor="middle" font-size="9.5" font-weight="500" fill="currentColor">dual int8</text><text x="405" y="137" text-anchor="middle" font-size="9.5" font-weight="500" fill="currentColor">MAC × 2</text>
+    <rect x="360" y="110" width="90" height="34" rx="3" fill="var(--accent)" fill-opacity=".15" stroke="var(--accent)" stroke-width="1.5"/><text x="405" y="125" text-anchor="middle" font-size="9.5" font-weight="500" fill="currentColor">packed int8</text><text x="405" y="137" text-anchor="middle" font-size="9.5" font-weight="500" fill="currentColor">2 results/cycle</text>
     <line x1="450" y1="127" x2="478" y2="127" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#f4b)"/>
     <rect x="480" y="110" width="80" height="34" rx="3" fill="var(--accent)" fill-opacity=".12" stroke="var(--accent)"/><text x="520" y="131" text-anchor="middle" font-size="9.5" fill="currentColor">int8 out</text>
     <text x="616" y="131" text-anchor="end" font-size="11" font-weight="500" fill="var(--accent)">2×</text>
     <!-- DMA annotation -->
     <rect x="216" y="154" width="5" height="5" fill="var(--accent)"/><rect x="223" y="154" width="5" height="5" fill="var(--accent)"/><rect x="230" y="154" width="5" height="5" fill="var(--accent)"/><text x="240" y="160" text-anchor="start" font-size="8.5" fill="var(--accent)">inter-tile DMA: 1 B/elem (0x80049240)</text>
-    <text x="130" y="178" text-anchor="start" font-size="9" fill="var(--fg-muted)">both compute and DMA run at 2× · consecutive int8 layers stay in int8 without degradation</text>
+    <text x="130" y="178" text-anchor="start" font-size="9" fill="var(--fg-muted)">packed compute · 1-byte inter-layer values · consecutive quantized blocks remain int8</text>
 
     <line x1="24" y1="194" x2="616" y2="194" stroke="var(--border)"/>
 
@@ -769,12 +768,12 @@
     <text x="130" y="268" text-anchor="start" font-size="9" fill="var(--fg-muted)">measured peak: 36.01 TOPS W8A8 (94.8% of 38 TOPS ceiling) vs 18.77 TFLOPS fp16 (98.8% of 19)</text>
     <text x="130" y="282" text-anchor="start" font-size="9" fill="var(--fg-muted)">power: 12.25 W at 36 TOPS vs 4.57 W at 18.8 TFLOPS → less efficient per op, more throughput per second</text>
   </svg>
-  <figcaption>A W8A8 chain has three block types. The first bridges fp16 input to the int8 internal format. Middle blocks run dual int8 MACs at 2× throughput with halved inter-tile DMA. The last block converts back to fp16. Int8 weights alone leave the first block in fp16 mode with nothing changed downstream — that is why W8-only measures 1.00×.</figcaption>
+  <figcaption>The entry block establishes the quantized intermediate. Middle blocks use packed int8 compute and one-byte inter-layer transfers. The output block converts the result to fp16. A W8-only chain stays on the fp16 path and measures 1.00×.</figcaption>
 </figure>
 
-<p>Int8 weights alone (W8 without A8) produce no speedup because the chain never leaves the first block's fp16 mode. The weight data is smaller in memory, but the dequantize step converts it to fp16 before the MAC, and all subsequent blocks run in fp16 mode with fp16 inter-tile DMA. The dual-pack mode requires int8 on both sides of the multiply.</p>
+<p>A single-layer quantized program contains no middle block. At 1024 channels and 32² spatial dimensions, it takes 260.4 µs, compared with 260.5 µs for fp16. Packed execution begins when a quantized result feeds another quantized layer. W8-only programs remain on the fp16 path because the weights are expanded before the MAC.</p>
 
-<div class="key"><b>FINDING</b><span>W8A8 activates dual-pack int8 MACs (2 ops/cycle) via TD mode word <code>0xb1</code>, plus halved inter-tile DMA via config bit <code>0x8000</code>. The 38 TOPS ceiling is real silicon throughput. W8-only = 1.00× because it never leaves fp16 compute mode.</span></div>
+<div class="key"><b>FINDING</b><span>W8A8 middle blocks select packed int8 compute with TD mode <code>0xb1</code> and one-byte inter-layer transfers with DMA bit <code>0x8000</code>. The measured ceiling is 38 TOPS. W8-only programs remain on the fp16 path and measure 1.00×.</span></div>
 
 <h3>Power and efficiency</h3>
 
@@ -787,11 +786,11 @@
 </table>
 </div>
 
-<p>The ANE has hard power gating: exactly 0 mW at idle, instant on. FP16 is the more power-efficient mode per operation. W8A8 draws 2.7× the power for 1.95× the throughput — the dual-pack MACs and doubled DMA activity cost energy. W8A8 buys throughput and SRAM footprint at the expense of efficiency per operation.</p>
+<p>The ANE draws exactly 0 mW at idle and powers on for each submission. W8A8 provides 1.95× the throughput while drawing 2.7× the power. FP16 is more efficient per counted operation; W8A8 completes more operations per second and uses narrower intermediate tensors. These measurements do not isolate how much of the additional power belongs to the compute array or the surrounding memory system.</p>
 
 <h3>Geometry matters</h3>
 
-<p>A shallow-channel tensor starves the compute array. Reshaping with SpaceToDepth into the 512-1024 channel band, computing there, and reshaping back with DepthToSpace is the biggest performance lever available:</p>
+<p>A shallow-channel tensor leaves much of the compute array idle. SpaceToDepth can move the computation into the 512–1024 channel range; DepthToSpace restores the original layout afterward:</p>
 
 <div class="table-wrap">
 <table>
@@ -838,7 +837,7 @@
     <text x="320" y="246" text-anchor="middle" font-size="9.5" fill="var(--fg-muted)">the compiler splits output channels across compute sets,</text>
     <text x="320" y="260" text-anchor="middle" font-size="9.5" fill="var(--fg-muted)">so a 64-channel layer can never occupy more than a fraction of the array</text>
   </svg>
-  <figcaption>The array parallelizes over output channels. A shallow tensor leaves most compute sets idle regardless of how large its spatial extent is; folding spatial into channels with SpaceToDepth is the single biggest lever we found.</figcaption>
+  <figcaption>The array parallelizes over output channels. A shallow tensor leaves most compute sets idle even when its spatial extent is large. SpaceToDepth trades spatial dimensions for channels and places more of the array in use.</figcaption>
 </figure>
 
 <p>S2D/D2S overhead is 0.3-1.4% of the pipeline. Avoid block_size=2: the compiler lowers it as a convolution with one-hot weights (2.8-3.1% overhead) rather than a DMA reshuffle.</p>
@@ -847,7 +846,7 @@
 
 <h2>ANE vs GPU vs CPU</h2>
 
-<p>The three engines on an M4 serve different roles. None replaces the others.</p>
+<p>The CPU, GPU, and ANE occupy different operating ranges on the M4.</p>
 
 <div class="table-wrap">
 <table>
@@ -861,7 +860,7 @@
 </table>
 </div>
 
-<p>For supported operations at batch sizes large enough to amortize the 90 µs dispatch, the ANE is 5x faster than the GPU and 8-13x more power-efficient than the CPU. The GPU wins on flexibility and zero dispatch overhead for in-flight work. The CPU wins on arbitrary code and instant dispatch.</p>
+<p>For supported operations large enough to amortize the 90 µs dispatch, the ANE measures 5× faster than the GPU and 8–13× more power-efficient than the CPU. The GPU supports a broader operation set and can add work to an active command stream. The CPU runs arbitrary code without the ANE submission cost.</p>
 
 <figure>
   <svg viewBox="0 0 640 260" role="img" aria-label="Line chart: ANE wall time is 90 microseconds plus compute; CPU wall time is about 4.9 times the ANE compute time; the lines cross near 23 microseconds of ANE work, below which the CPU is faster">
@@ -883,18 +882,18 @@
     <text x="76" y="54" text-anchor="start" font-size="9.5" fill="var(--chart-b)">CPU wins</text>
     <text x="594" y="212" text-anchor="end" font-size="9.5" fill="var(--chart-a)">ANE wins</text>
   </svg>
-  <figcaption>A model, not a measurement, except for its two inputs: the ≈90 µs floor measured on M4 and the ≈4.9× peak ratio between the ANE and the CPU's matrix unit. Anything shorter than ~23 µs of ANE work is faster on the CPU; anything longer belongs on the ANE, and fusing ops into one program moves work rightward.</figcaption>
+  <figcaption>The crossover model uses two measured inputs: an approximately 90 µs ANE dispatch floor and a 4.9× peak-throughput ratio between the ANE and the CPU matrix unit. Under these assumptions, the crossover occurs near 23 µs of ANE compute. Fusion moves workloads toward the range where the ANE amortizes dispatch.</figcaption>
 </figure>
 
-<p>For LLM inference, the practical split is: ANE for prefill (large-batch matrix operations, tiled as convolutions), CPU/SME for token-by-token decode (single-token operations where the 90 µs dispatch dominates). For on-device training, the ANE handles forward and backward matmuls at 2.8-4.6 W while the CPU handles weight updates and operations the ANE does not support (masked attention, Adam optimizer).</p>
+<p>For LLM inference, prefill provides the large matrix operations that suit the ANE. Token-by-token decode contains smaller operations for which the 90 µs submission cost can dominate, making CPU/SME execution more suitable. In our on-device training path, the ANE runs forward and backward matmuls at 2.8–4.6 W; the CPU performs weight updates, masked attention, and the Adam optimizer.</p>
 
 <div class="key"><b>FINDING</b><span>ANE for prefill and anything over ~25 µs of matrix work; CPU/SME for single-token decode where the 90 µs floor would dominate.</span></div>
 
 <h2>The M6: Dual ANE</h2>
 
-<p>Apple announced the M6 on August 25, 2026, built on TSMC's 2nm process. The headline change for the ANE: the M6 has two of them. Apple calls it a "Dual 16-core Neural Engine" and claims 2x peak compute over previous generations. System frameworks can use both engines simultaneously.</p>
+<p>Apple announced the 2 nm M6 on August 25, 2026. It contains two 16-core Neural Engines, and Apple states that system frameworks can use both simultaneously. The published claim is twice the peak compute of the preceding configuration.</p>
 
-<p>Apple did not publish a TOPS number for the M6 ANE. Based on what we know: if each engine matches the M4's 19 TFLOPS fp16, the dual configuration would deliver 38 TFLOPS fp16 (76 TOPS in W8A8 dual-pack mode). Whether the two engines share SRAM, coordinate DMA, or simply operate as independent units with separate memory pools is not disclosed. The DRAM bandwidth increased to 170 GB/s (from 120 GB/s on M4), a 42% increase that would partially offset the bandwidth pressure of running two engines against the same memory.</p>
+<p>Apple did not publish a TOPS figure for the M6 ANE. If each engine matches the M4's 19 TFLOPS fp16 rate, the pair would provide 38 TFLOPS fp16 or 76 TOPS in packed W8A8 mode. This is an extrapolation, not an M6 measurement. Apple has not disclosed whether the engines share SRAM, coordinate DMA, or operate independently. DRAM bandwidth rises from 120 GB/s on M4 to 170 GB/s on M6, an increase of 42%.</p>
 
 <figure>
   <svg viewBox="0 0 640 250" role="img" aria-label="M4 with one 16-core ANE on 120 GB/s DRAM beside M6 with two 16-core ANEs on 170 GB/s DRAM; dashed links mark what Apple has not said: shared SRAM, one or two dispatch paths, and whether one graph can span both">
@@ -927,22 +926,22 @@
     <text x="470" y="210" text-anchor="middle" font-size="10" fill="var(--fg-secondary)">can one compiled graph span both engines?</text>
     <text x="470" y="232" text-anchor="middle" font-size="9.5" fill="var(--fg-muted)">expected if independent: 38 TFLOPS fp16 · 76 TOPS W8A8</text>
   </svg>
-  <figcaption>What Apple has said about the M6 Neural Engine fits in one box: two of them, twice the peak, both usable at once by system frameworks. The dashed link and the three questions under it are what a HAT dump and a dispatch-floor measurement on real hardware would settle.</figcaption>
+  <figcaption>Apple specifies two 16-core Neural Engines, twice the peak compute, and simultaneous use through system frameworks. The connection between the engines, their SRAM organization, and their dispatch paths remain undocumented.</figcaption>
 </figure>
 
-<p>Several architectural questions follow from the dual-engine design. Can a single compiled graph span both engines, or does the framework partition the model into two independent subgraphs? Does each engine have its own 2 MiB operand threshold and 64 KiB kernel store, or do they share? Are the dispatch XPC paths independent (two 90 µs tax rounds, or one)?</p>
+<p>The unresolved architectural questions concern graph placement, memory, and dispatch. A graph may span both engines or be partitioned into independent subgraphs. Each engine may have its own 2 MiB operand threshold and 64 KiB kernel store, or those resources may be shared. The dispatch path may submit both engines together or pay the host-side cost separately.</p>
 
 <p>Apple also added "Neural Accelerators" to the M6 GPU cores, claiming a 30% improvement over M5 for GPU-side AI work. These are separate from the ANE and appear to be small fixed-function units within the GPU pipeline, similar to NVIDIA's tensor cores. Whether they share the same ISA as the ANE or use their own encoding is unknown.</p>
 
-<p>The M6 skipped Pro and Max variants. Apple says it is focusing on "future AI-centric chip designs." The dual-ANE M6 may be the beginning of a scaling strategy where NPU count grows with die area, the way GPU cores have scaled across the M-series lineup. If so, the M6 Pro/Max equivalents (whenever they arrive) could have 4 or 8 ANE instances.</p>
+<p>No M6 Pro or Max variant was announced with the M6. A dual-engine base chip leaves open whether later variants will scale ANE count with die area. Counts beyond the announced pair are speculative.</p>
 
-<p>We do not have an M6 to test. The predictions here are extrapolations from M4 measurements and Apple's public statements. When an M6 is available, the first experiments would be: dump the HAT to check whether the per-engine parameters changed, measure the dispatch floor for single and dual-engine workloads, and determine whether the two engines can overlap or must serialize.</p>
+<p>We do not have an M6 to test. The numerical estimates above extrapolate from M4 measurements and Apple's published specifications. Hardware inspection would begin with the HAT, followed by single- and dual-engine dispatch measurements and an overlap test.</p>
 
 <div class="key"><b>FINDING</b><span>M6 ships two 16-core engines and a 42% wider memory bus. Apple has said "2× peak" and nothing about how they coordinate.</span></div>
 
 <h2>Limits and Open Questions</h2>
 
-<p><strong>Program size.</strong> 256 Task Descriptor blocks execute correctly on M4. 257 fails with status <code>0x15</code>. But the failing case also crosses exactly 512 MiB per tensor, so the boundary could be either limit or both.</p>
+<p><strong>Program size.</strong> 256 Task Descriptor blocks execute correctly on M4. A program with 257 blocks fails with status <code>0x15</code> and also crosses 512 MiB per tensor. The current experiment does not separate those two limits.</p>
 
 <p><strong>No compute/DMA overlap.</strong> A combined matmul + ReLU program ran only ~1% faster than the sum of the two run separately (after subtracting the dispatch floor). The engine appears to serialize MAC and DMA work within a single program.</p>
 
@@ -956,7 +955,7 @@
 
 <hr>
 
-<p>The M4 ANE is a fixed-function matrix accelerator with 8 compute sets, 64 banks of on-chip SRAM, and a compiler-managed streaming model that tiles work around a 2 MiB per-operand budget. It reaches 19 TFLOPS fp16 and 38 TOPS W8A8 (dual-pack int8) at under 5 watts fp16 and draws exactly 0 mW when idle. Its constraints (no branching, fixed op set, two precision modes, 90 µs dispatch floor) are the price of that efficiency. The hardware is not complicated. The complexity is in the software stack above it, which Apple chose to keep private.</p>
+<p>The M4 ANE is a fixed-function matrix accelerator with 8 compute sets, 64 banks of on-chip SRAM, and a compiler-managed streaming model built around a 2 MiB per-operand threshold. It reaches 19 TFLOPS in fp16 and 38 TOPS in packed W8A8 mode. Peak fp16 power is 4.57 W, and the engine draws 0 mW when idle. Programs use a fixed operation set with no branching, and every submission includes an approximately 90 µs host-side dispatch cost. Apple keeps the compiler, program format, and driver interface private.</p>
 
 <p>The M6 doubles the engine count. Whether that is two independent accelerators or a coordinated pair remains to be measured.</p>
 
@@ -968,7 +967,7 @@
 <li>Spencer H. Bryngelson. <em>Apple Neural Engine: Architecture, Programming, and Performance.</em> arXiv:2606.22283, June 2026. <a href="https://arxiv.org/abs/2606.22283">arxiv.org/abs/2606.22283</a></li>
 <li>Ramchand Kumaresan. <em>Orion: Characterizing and Programming Apple's Neural Engine for LLM Training and Inference.</em> arXiv:2603.06728, March 2026. <a href="https://arxiv.org/abs/2603.06728">arxiv.org/abs/2603.06728</a></li>
 <li>Spencer H. Bryngelson. <em>ANEForge: Python for direct computation on the Apple Neural Engine.</em> arXiv:2606.17090, June 2026. <a href="https://arxiv.org/abs/2606.17090">arxiv.org/abs/2606.17090</a></li>
-<li>Manjeet Singh. <em>Inside the M4 Apple Neural Engine</em>, Parts 1-3. maderix.substack.com, 2026. <a href="../inside-the-m4-ane-part-1/">Part 1</a>, <a href="../inside-the-m4-ane-part-2/">Part 2</a>, <a href="../inside-the-m4-ane-part-3/">Part 3</a></li>
+<li>Manjeet Singh. <em>Inside the M4 Apple Neural Engine</em>, Parts 1-3. maderix.substack.com, 2026. <a href="https://maderix.substack.com/p/inside-the-m4-apple-neural-engine">Part 1</a>, <a href="https://maderix.substack.com/p/inside-the-m4-apple-neural-engine-615">Part 2</a>, <a href="https://maderix.substack.com/p/inside-the-m4-apple-neural-engine-c8b">Part 3</a></li>
 <li>Dougall Johnson. <em>Apple G13 GPU Architecture.</em> <a href="https://github.com/dougallj/applegpu">github.com/dougallj/applegpu</a>, 2021-present.</li>
 <li>Apple Inc. <em>Apple introduces M6 and M5 Ultra for a big leap in performance and AI compute.</em> August 25, 2026. <a href="https://www.apple.com/newsroom/2026/08/apple-introduces-m6-and-m5-ultra-for-a-big-leap-in-performance-and-ai-compute/">apple.com/newsroom</a></li>
 </ol>
