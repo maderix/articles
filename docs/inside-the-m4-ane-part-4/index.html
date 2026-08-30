@@ -154,7 +154,7 @@
 
 <p>Parts <a href="../inside-the-m4-ane-part-1/">1</a>, <a href="../inside-the-m4-ane-part-2/">2</a>, and <a href="../inside-the-m4-ane-part-3/">3</a> treated the ANE as a tool: compiling models, measuring throughput, and training a transformer. This part describes the M4 ANE itself, from the host interface and compiled program format to SRAM, DMA, compute, and measured limits.</p>
 
-<p>The account is based primarily on our reverse engineering of an M4. We traced the private API below CoreML, recovered the in-memory compile and evaluation paths, decoded the <code>0xBEEFFACE</code> Mach-O program format, mapped individual Task Descriptor fields, derived the tiling formulas, and recovered the activation lookup-table format. From-scratch emitters produce byte-identical programs and run at 98.8% of measured peak throughput. Additional experiments cover int8 execution, tensor geometry, dispatch latency, Task Descriptor counts, and compute/DMA overlap. We also extracted the compiler's 2,360-byte hardware parameter table from a live process with LLDB.</p>
+<p>This account comes mainly from reverse engineering an M4. We traced the private API below CoreML, recovered the in-memory compile and evaluation paths, decoded the <code>0xBEEFFACE</code> Mach-O program format, mapped Task Descriptor fields, derived the tiling formulas, and recovered the activation lookup-table format. Programs emitted from scratch match compiler output byte for byte and run at 98.8% of measured peak throughput. Separate experiments cover int8 execution, tensor geometry, dispatch latency, Task Descriptor counts, and compute/DMA overlap. The compiler's 2,360-byte hardware parameter table was extracted from a live process with LLDB.</p>
 
 <p>Bryngelson's reference for A11 through M5 supplies names for the compiler passes and fields in that parameter table. The Orion paper documents MIL-level constraints relevant to LLM workloads. Measurements and claims taken from those sources are identified where they appear.</p>
 
@@ -448,7 +448,7 @@
 
 <h2>Inside the Engine</h2>
 
-<p>The internal model comes from three sources. First, we compared hundreds of compiled programs byte by byte, recovered the Task Descriptor fields, tiling rules, weight-streaming stride, and lookup-table format, then checked those results with binaries emitted from scratch. Second, we called <code>ZinIrHalH16g::GetParams()</code> inside the live M4 compiler process and extracted its 2,360-byte Hardware Abstraction Table (HAT). Third, Bryngelson's compiler analysis supplies names for the internal passes and HAT fields. The values reported below were read from the M4.</p>
+<p>Most of the internal model came from byte-level comparisons of compiled programs, followed by runs of binaries emitted from scratch. Those comparisons exposed Task Descriptor fields, tiling rules, the weight-streaming stride, and the lookup-table format. We also called <code>ZinIrHalH16g::GetParams()</code> inside the live M4 compiler process and extracted its 2,360-byte Hardware Abstraction Table (HAT). Bryngelson's compiler analysis supplies names for several internal passes and HAT fields. The values below were read from the M4.</p>
 
 <figure>
   <svg viewBox="0 0 640 316" role="img" aria-label="Two timelines: an operand under 2 MiB is loaded whole and then computed, serialized; an operand over 2 MiB is cut into tiles and each tile's DMA overlaps the previous tile's compute">
@@ -496,7 +496,7 @@
 
 <p>Weights have their own budget. Up to 64 KiB of weights stay resident on-chip (the "kernel-coefficient store"). Weights up to 16 MiB can be streamed through in 16 DMA chunks. The compiler divides the weight matrix into 16 pieces regardless of total size and loads them sequentially.</p>
 
-<div class="key"><b>FINDING</b><span>One number, <code>HAT[0x1b8]</code> = 2 MiB per operand, decides whether the compiler keeps an operand resident or tiles and streams it.</span></div>
+<div class="key"><b>FINDING</b><span>The compiler compares each operand with <code>HAT[0x1b8]</code>, a 2 MiB threshold, when choosing resident or streamed storage.</span></div>
 
 <h3>Compute</h3>
 
@@ -514,7 +514,7 @@
 
 <p>Fused operations keep intermediate values in SRAM. When one operation feeds the next, the compiler emits <code>DMA_INTER</code> instead of <code>DMA_STORE</code> followed by <code>DMA_LOAD</code>. A fused matmul + bias + relu runs 5.7× faster than three separate dispatches because it avoids the intermediate DRAM transfers and two additional dispatches.</p>
 
-<div class="key"><b>FINDING</b><span>Fusion is the compiler's biggest lever: <code>DMA_INTER</code> keeps intermediates in SRAM. matmul + bias + relu fused runs 5.7× faster than the same three ops dispatched one at a time.</span></div>
+<div class="key"><b>FINDING</b><span><code>DMA_INTER</code> keeps fused intermediates in SRAM. A fused matmul + bias + relu runs 5.7× faster than the same operations submitted separately.</span></div>
 
 <h2>What the ANE Computes</h2>
 
@@ -590,11 +590,13 @@
   <figcaption>Single matmuls reach 5.2–5.7 TFLOPS. Conv1x1 chains of 32 layers or more at 512–1024 channels reach 18.45–18.77 TFLOPS, within 1.2% of the measured fp16 ceiling.</figcaption>
 </figure>
 
-<p>The measured ceilings are 19 TFLOPS in fp16 mode and 38 TOPS in packed W8A8 mode.</p>
+<p>FP16 throughput saturates near 19 TFLOPS. Two packed int8 products per lane give a corresponding rate of 38 TOPS; the highest measured W8A8 result is 36.01 TOPS.</p>
 
-<h3>INT8: packed compute</h3>
+<h3>INT8: the W8A8 path</h3>
 
-<p>The M4 ANE has two measured compute paths: fp16 and packed W8A8. The fp16 path reaches 18.77 TFLOPS. When both weights and intermediate activations remain int8, deep operation chains reach 36.01 TOPS.</p>
+<p>The M4 ANE runs W8A8 convolution chains in a packed mode. Both weights and the intermediate activations must be int8. Int8 weights with fp16 activations stay on the fp16 compute path; keeping the edges between convolutions in int8 selects the packed path.</p>
+
+<p>At MIL level, the compiler is given int8 weights through <code>constexpr_affine_dequantize</code> and an int8 <code>quantize</code>/<code>dequantize</code> pair between consecutive convolutions. The pair describes the precision of the connecting edge. It does not add an intermediate DRAM store: the compiled program carries the quantized value directly into the next block.</p>
 
 <div class="table-wrap">
 <table>
@@ -605,7 +607,7 @@
 </table>
 </div>
 
-<p>Both modes use the same operation-count formula: <code>2 × channels² × kernel² × spatial² × depth</code>. The fp16 chain reaches 18.77 TFLOPS, or 98.8% of its 19 TFLOPS ceiling. The W8A8 chain reaches 36.01 TOPS, or 94.8% of its 38 TOPS packed-compute ceiling.</p>
+<p>The benchmark counts the same convolution operations in both modes: <code>2 × channels² × kernel² × spatial² × depth</code>. Deep fp16 chains reach 18.77 TFLOPS. Deep W8A8 chains reach 36.01 TOPS. The measured rates correspond to one fp16 product or two int8 products per compute lane per cycle.</p>
 
 <figure>
   <svg viewBox="0 0 640 392" role="img" aria-label="Paired bar chart of fp16 and W8A8 throughput across six chain depths. W8A8 reaches 36 TOPS against a 38 TOPS packed-compute ceiling; fp16 reaches 18.5 TFLOPS against a 19 TFLOPS ceiling.">
@@ -619,7 +621,7 @@
     <text x="26" y="26" text-anchor="start" font-size="12" font-weight="600" fill="currentColor">FP16 and W8A8 throughput by chain depth</text>
     <text x="26" y="43" text-anchor="start" font-size="10" fill="var(--fg-secondary)">Measured conv1x1 throughput using the same operation-count formula</text>
 
-    <!-- forbidden band: above 19, y 180.75 up to 60 -->
+    <!-- packed-W8A8 operating region above the fp16 rate -->
     <rect x="130" y="60" width="470" height="120.75" fill="url(#int8-hatch)"/>
     <rect x="130" y="60" width="470" height="120.75" fill="var(--chart-a)" fill-opacity=".04"/>
 
@@ -633,16 +635,16 @@
     <line x1="130" y1="60" x2="600" y2="60" stroke="var(--border)" stroke-width="0.5"/>
     <text x="123" y="63.5" text-anchor="end" font-size="10" fill="var(--fg-muted)">40</text>
 
-    <!-- 38 TOPS dual-pack ceiling -->
+    <!-- measured packed-W8A8 limit -->
     <line x1="130" y1="71.5" x2="600" y2="71.5" stroke="var(--chart-b)" stroke-width="1.5" stroke-dasharray="7 4"/>
-    <text x="136" y="67" text-anchor="start" font-size="9.5" font-weight="500" fill="var(--chart-b)">38 TOPS · W8A8 packed-compute ceiling</text>
+    <text x="136" y="67" text-anchor="start" font-size="9.5" font-weight="500" fill="var(--chart-b)">38 TOPS · packed W8A8 rate</text>
 
-    <!-- W8A8 operating range above the fp16 ceiling -->
-    <text x="136" y="101" text-anchor="start" font-size="9.5" font-weight="500" fill="var(--chart-a)">W8A8 operating range above the fp16 ceiling</text>
+    <!-- upper half of the packed-W8A8 operating range -->
+    <text x="136" y="101" text-anchor="start" font-size="9.5" font-weight="500" fill="var(--chart-a)">throughput available in packed mode</text>
 
-    <!-- 19 TFLOPS fp16 ceiling -->
+    <!-- measured fp16 limit -->
     <line x1="130" y1="180.75" x2="600" y2="180.75" stroke="var(--chart-a)" stroke-width="1.5" stroke-dasharray="7 4"/>
-    <text x="136" y="176" text-anchor="start" font-size="9.5" font-weight="500" fill="var(--chart-a)">19 TFLOPS · fp16 ceiling</text>
+    <text x="136" y="176" text-anchor="start" font-size="9.5" font-weight="500" fill="var(--chart-a)">19 TFLOPS · fp16 rate</text>
 
     <!-- axes -->
     <line x1="130" y1="60" x2="130" y2="290" stroke="var(--diagram-stroke)" stroke-width="1"/>
@@ -699,14 +701,14 @@
     <rect x="188" y="341" width="11" height="11" rx="2" fill="var(--chart-b)" fill-opacity=".85"/>
     <text x="205" y="350.5" text-anchor="start" font-size="10" fill="var(--fg-secondary)">W8A8</text>
     <rect x="264" y="341" width="11" height="11" rx="2" fill="url(#int8-hatch)" stroke="var(--chart-a)" stroke-opacity=".35" stroke-width="0.75"/>
-    <text x="281" y="350.5" text-anchor="start" font-size="10" fill="var(--fg-secondary)">W8A8 range above fp16</text>
+    <text x="281" y="350.5" text-anchor="start" font-size="10" fill="var(--fg-secondary)">packed-mode range</text>
 
     <text x="130" y="374" text-anchor="start" font-size="9" fill="var(--fg-muted)">conv1x1 chains · L=1–32 at 512ch 32² · L=48* at 1024ch 64² · median of 100–400 evals</text>
   </svg>
-  <figcaption>FP16 and W8A8 have similar throughput at a chain depth of one. W8A8 throughput increases as the chain gains quantized middle blocks, reaching 36.01 TOPS at 48 layers. The corresponding fp16 chain reaches 18.45 TFLOPS. The measured ceilings are 19 TFLOPS for fp16 and 38 TOPS for packed W8A8 execution.</figcaption>
+  <figcaption>A one-layer program has no quantized internal edge, so its fp16 and W8A8 timings are nearly equal. Packed middle blocks appear in deeper W8A8 chains. Throughput rises to 36.01 TOPS at 48 layers; the corresponding fp16 chain reaches 18.45 TFLOPS.</figcaption>
 </figure>
 
-<p>A W8A8 chain contains three block types. The entry block accepts fp16 input and produces the first quantized intermediate. Middle blocks consume int8 activations and pass one-byte results directly to the next layer. The final block converts the result to the requested output format.</p>
+<p>The compiled chain has an fp16 boundary at each end and int8 edges inside it. The entry block accepts fp16 input, performs the first convolution, and writes an int8 intermediate. Middle blocks consume and produce int8. The final block consumes int8 and writes the requested fp16 output.</p>
 
 <div class="table-wrap">
 <table>
@@ -717,24 +719,37 @@
 </table>
 </div>
 
-<p>The middle-block mode changes from the fp16 form to <code>0xb1</code>. In the streams we examined, bits 25 and 29 track the input-precision mode: fp16 blocks set bit 25, while quantized middle blocks set bit 29. The DMA configuration adds <code>0x8000</code> as the inter-layer width changes from 2 bytes to 1. Each W8A8 middle block also contains 4 configuration words absent from its fp16 counterpart.</p>
+<p>Three parts of the HWX record change together. The compute mode becomes <code>0xb1418005</code> in a middle block. The inter-layer DMA word becomes <code>0x80049240</code>, selecting a one-byte edge instead of the fp16 form <code>0x80041240</code>. The block grows by four configuration words, including quantization control and scale. Changing only the mode or only the DMA word does not produce a valid W8A8 block.</p>
+
+<div class="table-wrap">
+<table>
+<tr><th>Direct HWX control</th><th>Hardware result</th><th>Field role</th></tr>
+<tr><td>Compiler W8A8 stream</td><td>0 mismatches</td><td>Reference packed path</td></tr>
+<tr><td>Middle mode <code>0xb1418005 → 0x93418005</code></td><td>Program runs; 1,976,199 of 2,097,152 outputs differ</td><td>Arithmetic and scheduling mode</td></tr>
+<tr><td>Either edge DMA <code>0x80049240 → 0x80041240</code></td><td>Load succeeds; evaluation returns <code>0x15</code></td><td>Quantized inter-block transfer</td></tr>
+</table>
+</div>
+
+<p>The mode-only edit also changes the three-layer run from 371.4 µs to 703.9 µs. The program still loads and executes, so the word is active hardware configuration rather than descriptive metadata. Reverting either quantized DMA edge stops evaluation before an output is produced.</p>
+
+<p>A direct HWX emitter must update the complete block: compute mode, both edge-DMA records, quantization words, scales, and the depth-dependent command metadata in the container. The field mutations above establish direct access to the packed path. A geometry-independent W8A8 constructor still requires the remaining container metadata to be mapped.</p>
 
 <figure>
-  <svg viewBox="0 0 640 290" role="img" aria-label="A W8A8 deep chain: the first block bridges fp16 input to int8 internal representation, middle blocks run dual int8 MACs with halved DMA, and the last block converts back">
+  <svg viewBox="0 0 640 290" role="img" aria-label="A W8A8 convolution chain with an fp16 entry, packed int8 middle blocks and an fp16 output">
     <rect x="0" y="0" width="640" height="290" fill="var(--diagram-bg)" rx="4"/>
     <defs><marker id="f4a" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><polygon points="0,0 6,3 0,6" fill="var(--diagram-stroke)"/></marker><marker id="f4b" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><polygon points="0,0 6,3 0,6" fill="var(--accent)"/></marker></defs>
-    <text x="320" y="22" text-anchor="middle" font-size="11" font-weight="500" fill="currentColor">W8A8 deep chain: three block types</text>
+    <text x="320" y="22" text-anchor="middle" font-size="11" font-weight="500" fill="currentColor">How a W8A8 convolution chain stays quantized</text>
 
     <!-- Block 0 -->
     <text x="24" y="56" text-anchor="start" font-size="10" font-weight="500" fill="currentColor">block 0</text>
     <text x="24" y="70" text-anchor="start" font-size="9" fill="var(--fg-muted)">mode 0x93</text>
     <rect x="130" y="42" width="80" height="34" rx="3" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/><text x="170" y="63" text-anchor="middle" font-size="9.5" fill="currentColor">fp16 input</text>
     <line x1="210" y1="59" x2="238" y2="59" stroke="var(--diagram-stroke)" marker-end="url(#f4a)"/>
-    <rect x="240" y="42" width="90" height="34" rx="3" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/><text x="285" y="57" text-anchor="middle" font-size="9.5" fill="currentColor">dequant wt</text><text x="285" y="69" text-anchor="middle" font-size="9.5" fill="currentColor">→ fp16</text>
+    <rect x="240" y="42" width="90" height="34" rx="3" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/><text x="285" y="57" text-anchor="middle" font-size="9.5" fill="currentColor">int8 weights</text><text x="285" y="69" text-anchor="middle" font-size="9.5" fill="currentColor">+ scale</text>
     <line x1="330" y1="59" x2="358" y2="59" stroke="var(--diagram-stroke)" marker-end="url(#f4a)"/>
-    <rect x="360" y="42" width="90" height="34" rx="3" fill="var(--grp-b)" fill-opacity=".15" stroke="var(--grp-b)"/><text x="405" y="63" text-anchor="middle" font-size="9.5" fill="currentColor">fp16 MAC</text>
+    <rect x="360" y="42" width="90" height="34" rx="3" fill="var(--grp-b)" fill-opacity=".15" stroke="var(--grp-b)"/><text x="405" y="57" text-anchor="middle" font-size="9.5" fill="currentColor">entry</text><text x="405" y="69" text-anchor="middle" font-size="9.5" fill="currentColor">convolution</text>
     <line x1="450" y1="59" x2="478" y2="59" stroke="var(--diagram-stroke)" marker-end="url(#f4a)"/>
-    <rect x="480" y="42" width="80" height="34" rx="3" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/><text x="520" y="63" text-anchor="middle" font-size="9.5" fill="currentColor">→ int8 out</text>
+    <rect x="480" y="42" width="80" height="34" rx="3" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/><text x="520" y="57" text-anchor="middle" font-size="9.5" fill="currentColor">quantize</text><text x="520" y="69" text-anchor="middle" font-size="9.5" fill="currentColor">int8 edge</text>
     <text x="616" y="63" text-anchor="end" font-size="11" font-weight="500" fill="var(--fg-muted)">1×</text>
 
     <line x1="24" y1="94" x2="616" y2="94" stroke="var(--border)"/>
@@ -746,7 +761,7 @@
     <line x1="210" y1="127" x2="238" y2="127" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#f4b)"/>
     <rect x="240" y="110" width="90" height="34" rx="3" fill="var(--accent)" fill-opacity=".12" stroke="var(--accent)"/><text x="285" y="125" text-anchor="middle" font-size="9.5" fill="currentColor">int8 wt</text><text x="285" y="137" text-anchor="middle" font-size="9.5" fill="currentColor">+ int8 act</text>
     <line x1="330" y1="127" x2="358" y2="127" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#f4b)"/>
-    <rect x="360" y="110" width="90" height="34" rx="3" fill="var(--accent)" fill-opacity=".15" stroke="var(--accent)" stroke-width="1.5"/><text x="405" y="125" text-anchor="middle" font-size="9.5" font-weight="500" fill="currentColor">packed int8</text><text x="405" y="137" text-anchor="middle" font-size="9.5" font-weight="500" fill="currentColor">2 results/cycle</text>
+    <rect x="360" y="110" width="90" height="34" rx="3" fill="var(--accent)" fill-opacity=".15" stroke="var(--accent)" stroke-width="1.5"/><text x="405" y="125" text-anchor="middle" font-size="9.5" font-weight="500" fill="currentColor">packed MAC</text><text x="405" y="137" text-anchor="middle" font-size="9.5" font-weight="500" fill="currentColor">2 int8 products</text>
     <line x1="450" y1="127" x2="478" y2="127" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#f4b)"/>
     <rect x="480" y="110" width="80" height="34" rx="3" fill="var(--accent)" fill-opacity=".12" stroke="var(--accent)"/><text x="520" y="131" text-anchor="middle" font-size="9.5" fill="currentColor">int8 out</text>
     <text x="616" y="131" text-anchor="end" font-size="11" font-weight="500" fill="var(--accent)">2×</text>
@@ -761,19 +776,19 @@
     <text x="24" y="238" text-anchor="start" font-size="9" fill="var(--fg-muted)">mode 0x91</text>
     <rect x="130" y="210" width="80" height="34" rx="3" fill="var(--accent)" fill-opacity=".12" stroke="var(--accent)"/><text x="170" y="231" text-anchor="middle" font-size="9.5" fill="currentColor">int8 input</text>
     <line x1="210" y1="227" x2="358" y2="227" stroke="var(--diagram-stroke)" marker-end="url(#f4a)"/>
-    <rect x="360" y="210" width="90" height="34" rx="3" fill="var(--grp-b)" fill-opacity=".15" stroke="var(--grp-b)"/><text x="405" y="231" text-anchor="middle" font-size="9.5" fill="currentColor">output MAC</text>
+    <rect x="360" y="210" width="90" height="34" rx="3" fill="var(--grp-b)" fill-opacity=".15" stroke="var(--grp-b)"/><text x="405" y="225" text-anchor="middle" font-size="9.5" fill="currentColor">final</text><text x="405" y="237" text-anchor="middle" font-size="9.5" fill="currentColor">convolution</text>
     <line x1="450" y1="227" x2="478" y2="227" stroke="var(--diagram-stroke)" marker-end="url(#f4a)"/>
     <rect x="480" y="210" width="80" height="34" rx="3" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/><text x="520" y="231" text-anchor="middle" font-size="9.5" fill="currentColor">fp16 out</text>
 
-    <text x="130" y="268" text-anchor="start" font-size="9" fill="var(--fg-muted)">measured peak: 36.01 TOPS W8A8 (94.8% of 38 TOPS ceiling) vs 18.77 TFLOPS fp16 (98.8% of 19)</text>
-    <text x="130" y="282" text-anchor="start" font-size="9" fill="var(--fg-muted)">power: 12.25 W at 36 TOPS vs 4.57 W at 18.8 TFLOPS → less efficient per op, more throughput per second</text>
+    <text x="130" y="268" text-anchor="start" font-size="9" fill="var(--fg-muted)">internal edges: 1 byte per element · entry and output remain fp16-facing</text>
+    <text x="130" y="282" text-anchor="start" font-size="9" fill="var(--fg-muted)">measured deep-chain rate: 36.01 TOPS W8A8 · 18.77 TFLOPS fp16</text>
   </svg>
-  <figcaption>The entry block establishes the quantized intermediate. Middle blocks use packed int8 compute and one-byte inter-layer transfers. The output block converts the result to fp16. A W8-only chain stays on the fp16 path and measures 1.00×.</figcaption>
+  <figcaption>The fp16 input is quantized after the entry convolution. Middle blocks keep activations on one-byte edges and use packed int8 compute. The final block writes fp16 output. Int8 weights alone do not create this internal path.</figcaption>
 </figure>
 
-<p>A single-layer quantized program contains no middle block. At 1024 channels and 32² spatial dimensions, it takes 260.4 µs, compared with 260.5 µs for fp16. Packed execution begins when a quantized result feeds another quantized layer. W8-only programs remain on the fp16 path because the weights are expanded before the MAC.</p>
+<p>A single convolution has no quantized internal edge. At 1024 channels and 32² spatial dimensions, the int8-weight version takes 260.4 µs and the fp16 version takes 260.5 µs. Packed execution starts inside a chain, after one convolution produces an int8 activation for the next. W8-only programs therefore measure 1.00× while deep W8A8 chains approach 2×.</p>
 
-<div class="key"><b>FINDING</b><span>W8A8 middle blocks select packed int8 compute with TD mode <code>0xb1</code> and one-byte inter-layer transfers with DMA bit <code>0x8000</code>. The measured ceiling is 38 TOPS. W8-only programs remain on the fp16 path and measure 1.00×.</span></div>
+<div class="key"><b>FINDING</b><span>W8A8 is a chain property. Middle blocks use mode <code>0xb1418005</code>, one-byte edges use DMA word <code>0x80049240</code>, and both records are required. Int8 weights without int8 activation edges stay on the fp16 path.</span></div>
 
 <h3>Power and efficiency</h3>
 
