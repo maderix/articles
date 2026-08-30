@@ -968,21 +968,29 @@
 
 <h2>Limits and Open Questions</h2>
 
-<p><strong>Program depth.</strong> The earlier 257-block failure was caused by a test that reached 512 MiB per tensor at the same point. A new sweep held each tensor at 128 KiB. Chains with 255, 256, 257, 300, 320, 336, 352, 368, 376, 380, and 383 convolutions compiled, loaded, and evaluated without request failures. At 384 and above, <code>ANECompilerService</code> disconnected during compilation. The M4 therefore accepts at least 383 blocks in this graph family. The physical HWX limit remains unknown because the compiler did not produce a 384-block binary for direct loading.</p>
+<h3>Measured boundaries</h3>
 
-<p><strong>Compute and DMA overlap.</strong> A combined 2,048-square matmul and independent 8,192-square ReLU saved 19.5 µs after subtracting one dispatch, 1.1% of the shorter leg. Using the minimum timings leaves 6.1 µs, or 0.34%. This is too close to submission and measurement noise to claim useful overlap. It also does not establish that overlap is impossible. A decisive test needs one HWX container with a load-bearing serialize/overlap control or per-TD DMA and compute counters.</p>
+<div class="table-wrap">
+<table>
+<tr><th>Boundary</th><th>M4 result</th></tr>
+<tr><td>Compiled graph depth</td><td>Convolution chains through 383 blocks compile, load, and evaluate with 128 KiB tensors. At 384 blocks, <code>ANECompilerService</code> disconnects before producing HWX.</td></tr>
+<tr><td>Numeric formats</td><td>The mapped compute paths are fp16 and packed W8A8. The H16G E4M3 capability gate is zero, and the current compiler exposes no FP8 path.</td></tr>
+<tr><td>Control flow</td><td>HWX contains DMA, compute, synchronization, and termination records. It has no decoded branch or predicate record. Procedure selection happens before dispatch.</td></tr>
+<tr><td>Host submission</td><td>Each evaluation carries an approximately 90 µs host-side floor. Two concurrent requests save about 16% end to end, from overlapping host/runtime work rather than doubling engine throughput.</td></tr>
+</table>
+</div>
 
-<p><strong>Parallel issue.</strong> Eight independent adds were 1.0083× faster than eight chained adds with the same program size and descriptor count. No graph-level wide issue appeared in that test. It does not exclude a narrow internal pipeline or independent MAC and planar-engine work issuing together. The M4 micro-issue width remains unknown.</p>
+<h3>Still unknown</h3>
 
-<p><strong>DMA width and queue depth.</strong> Sweeping two through eight independent 32 MiB input planes added 995 µs for each extra plane. The compiler emitted another serialized Task Descriptor for every add, so the test did not expose the number of physical DMA engines. A single active TD with several live sources is needed to find that limit.</p>
+<p><strong>Maximum hardware program size.</strong> The compiler stops first at 384 convolution blocks, leaving the physical HWX limit above 383 unmeasured.</p>
 
-<p><strong>FP8.</strong> The H16G E4M3 capability gate is zero, and no FP8 program path has been found. The paths exercised on M4 are fp16 and packed W8A8. This rules out FP8 through the current compiler and descriptors we have mapped; it does not identify every numeric circuit that may exist on the die.</p>
+<p><strong>Internal overlap.</strong> A combined matmul and independent ReLU saved 19.5 µs after subtracting one dispatch, 1.1% of the shorter operation. Eight independent adds were 1.0083× faster than eight chained adds. These are graph-level timings; the overlap between MAC, planar, and DMA engines inside a Task Descriptor is still unresolved.</p>
 
-<p><strong>Control flow.</strong> Decoded HWX streams contain DMA, compute, synchronization, and termination records, with no branch target or predicate record. Every block in a submitted program runs. Procedure indices select among separately compiled entry points before dispatch; they are not branches inside an executing graph.</p>
+<p><strong>DMA topology.</strong> Tests expose three tile-DMA references and one kernel-DMA reference in compiled programs. The number of physical engines and their queue depth are unknown. A sweep from two to eight input planes serialized into additional Task Descriptors and therefore measured the compiler's schedule rather than the hardware's DMA width.</p>
 
-<p><strong>Lane width and clock.</strong> Aggregate throughput establishes the 19 TFLOPS fp16 and 38 TOPS packed rates. The HAT values 8/4/2/1 belong to accumulator tiling and do not reveal the number of output channels produced each cycle. The active ANE clock has not been read directly, so physical lane count and clock rate cannot yet be separated from throughput.</p>
+<p><strong>Lane count and clock.</strong> The aggregate rates are 19 TFLOPS for fp16 and 38 TOPS for packed W8A8. The HAT's 8/4/2/1 values describe accumulator tiling. The active clock and the number of output channels produced per cycle have not been isolated.</p>
 
-<p><strong>WAIT semantics.</strong> Removing known <code>WAIT</code> and <code>WAIT_EXT</code> records breaks dependent programs. Adding padding words that resemble waits produced no monotonic timing cost, so those insertions were not active records. Their exact scope and latency still need a serializer-level A/B test.</p>
+<p><strong>Synchronization scope.</strong> <code>WAIT</code> and <code>WAIT_EXT</code> are required by dependent programs. Their exact targets, scope, and latency are not yet mapped.</p>
 
 <hr>
 
