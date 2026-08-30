@@ -154,6 +154,18 @@
 
 <p>Parts <a href="../inside-the-m4-ane-part-1/">1</a>, <a href="../inside-the-m4-ane-part-2/">2</a>, and <a href="../inside-the-m4-ane-part-3/">3</a> treated the ANE as a tool: compiling models, measuring throughput, and training a transformer. This part describes the M4 ANE itself, from the host interface and compiled program format to SRAM, DMA, compute, and measured limits.</p>
 
+<p>MIL was the right level for those experiments. It let us describe a graph, ask Apple's compiler to place it on the ANE, and measure the result. It did not expose the decisions made after the graph crossed the compiler boundary. Fusion, tiling, SRAM placement, DMA scheduling, tensor layout, and numeric mode were chosen inside <code>ANECompiler.framework</code>. A MIL benchmark could show that two graphs behaved differently; it could not show which hardware fields made them different.</p>
+
+<p>For this part we moved one layer down and treated the compiled HWX program as the object of study. We compiled matched MIL graphs that differed in one property, compared their HWX binaries, changed candidate fields, and loaded the modified programs directly. A field was assigned a hardware role only after the edited program loaded and its output or timing changed in the expected way. Programs emitted from scratch supplied a second check for the formats we had mapped. HWX still passes through Apple's loader and firmware; this method removes the graph compiler from the experiment, not the runtime.</p>
+
+<div class="table-wrap">
+<table>
+<tr><th>Path</th><th>What it reveals</th><th>What remains hidden</th></tr>
+<tr><td>MIL → compiler → ANE</td><td>Operation support, graph-level performance, numerical output, compiler policy</td><td>The descriptor fields and scheduling choices selected by the compiler</td></tr>
+<tr><td>HWX → loader → ANE</td><td>Task Descriptors, DMA records, tiling, modes, synchronization, field-level A/B tests</td><td>Firmware internals and physical events without performance counters</td></tr>
+</table>
+</div>
+
 <p>This account comes mainly from reverse engineering an M4. We traced the private API below CoreML, recovered the in-memory compile and evaluation paths, decoded the <code>0xBEEFFACE</code> Mach-O program format, mapped Task Descriptor fields, derived the tiling formulas, and recovered the activation lookup-table format. Programs emitted from scratch match compiler output byte for byte and run at 98.8% of measured peak throughput. Separate experiments cover int8 execution, tensor geometry, dispatch latency, Task Descriptor counts, and compute/DMA overlap. The compiler's 2,360-byte hardware parameter table was extracted from a live process with LLDB.</p>
 
 <p>Bryngelson's reference for A11 through M5 supplies names for the compiler passes and fields in that parameter table. The Orion paper documents MIL-level constraints relevant to LLM workloads. Measurements and claims taken from those sources are identified where they appear.</p>
@@ -956,17 +968,21 @@
 
 <h2>Limits and Open Questions</h2>
 
-<p><strong>Program size.</strong> 256 Task Descriptor blocks execute correctly on M4. A program with 257 blocks fails with status <code>0x15</code> and also crosses 512 MiB per tensor. The current experiment does not separate those two limits.</p>
+<p><strong>Program depth.</strong> The earlier 257-block failure was caused by a test that reached 512 MiB per tensor at the same point. A new sweep held each tensor at 128 KiB. Chains with 255, 256, 257, 300, 320, 336, 352, 368, 376, 380, and 383 convolutions compiled, loaded, and evaluated without request failures. At 384 and above, <code>ANECompilerService</code> disconnected during compilation. The M4 therefore accepts at least 383 blocks in this graph family. The physical HWX limit remains unknown because the compiler did not produce a 384-block binary for direct loading.</p>
 
-<p><strong>No compute/DMA overlap.</strong> A combined matmul + ReLU program ran only ~1% faster than the sum of the two run separately (after subtracting the dispatch floor). The engine appears to serialize MAC and DMA work within a single program.</p>
+<p><strong>Compute and DMA overlap.</strong> A combined 2,048-square matmul and independent 8,192-square ReLU saved 19.5 µs after subtracting one dispatch, 1.1% of the shorter leg. Using the minimum timings leaves 6.1 µs, or 0.34%. This is too close to submission and measurement noise to claim useful overlap. It also does not establish that overlap is impossible. A decisive test needs one HWX container with a load-bearing serialize/overlap control or per-TD DMA and compute counters.</p>
 
-<p><strong>No wide issue.</strong> Eight independent adds were 1.008x faster than eight chained adds. The engine does not execute independent operations in parallel across compute sets in the configurations we tested. The compiler allows one MAC operation and one planar-engine operation to co-issue when they are independent; same-engine overlap is rejected.</p>
+<p><strong>Parallel issue.</strong> Eight independent adds were 1.0083× faster than eight chained adds with the same program size and descriptor count. No graph-level wide issue appeared in that test. It does not exclude a narrow internal pipeline or independent MAC and planar-engine work issuing together. The M4 micro-issue width remains unknown.</p>
 
-<p><strong>No FP8.</strong> The E4M3 capability gate in the HAT is zero. The compute path is fp16 or dual-pack int8; no intermediate precision is available.</p>
+<p><strong>DMA width and queue depth.</strong> Sweeping two through eight independent 32 MiB input planes added 995 µs for each extra plane. The compiler emitted another serialized Task Descriptor for every add, so the test did not expose the number of physical DMA engines. A single active TD with several live sources is needed to find that limit.</p>
 
-<p><strong>No branching.</strong> The ANE has no conditional execution. Every operation in a compiled graph runs every time. Dynamic shapes are supported only through procedure indices (selecting among pre-compiled shapes) or runtime-variable dimension bindings in the dispatch descriptor.</p>
+<p><strong>FP8.</strong> The H16G E4M3 capability gate is zero, and no FP8 program path has been found. The paths exercised on M4 are fp16 and packed W8A8. This rules out FP8 through the current compiler and descriptors we have mapped; it does not identify every numeric circuit that may exist on the die.</p>
 
-<p><strong>Unknown lane width.</strong> The HAT carries per-accumulator tier values (8/4/2/1), but those are inputs to the tiling formula, not the per-cycle rate. How many output channels the array produces per cycle has not been measured.</p>
+<p><strong>Control flow.</strong> Decoded HWX streams contain DMA, compute, synchronization, and termination records, with no branch target or predicate record. Every block in a submitted program runs. Procedure indices select among separately compiled entry points before dispatch; they are not branches inside an executing graph.</p>
+
+<p><strong>Lane width and clock.</strong> Aggregate throughput establishes the 19 TFLOPS fp16 and 38 TOPS packed rates. The HAT values 8/4/2/1 belong to accumulator tiling and do not reveal the number of output channels produced each cycle. The active ANE clock has not been read directly, so physical lane count and clock rate cannot yet be separated from throughput.</p>
+
+<p><strong>WAIT semantics.</strong> Removing known <code>WAIT</code> and <code>WAIT_EXT</code> records breaks dependent programs. Adding padding words that resemble waits produced no monotonic timing cost, so those insertions were not active records. Their exact scope and latency still need a serializer-level A/B test.</p>
 
 <hr>
 
