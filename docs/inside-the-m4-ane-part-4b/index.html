@@ -207,6 +207,20 @@
     text-transform: uppercase;
   }
 
+  .repo-link {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 12px;
+    align-items: baseline;
+    margin: 20px 0 28px;
+    padding: 13px 15px;
+    border-left: 3px solid var(--blue);
+    background: color-mix(in srgb, var(--blue) 7%, var(--bg));
+    font-size: 16px;
+  }
+  .repo-link strong { font-weight: 600; }
+  .repo-link span { color: var(--fg-secondary); }
+
   .toc {
     max-width: 1000px;
     margin: 18px 0 28px;
@@ -462,6 +476,8 @@
 
     <p><a href="../inside-the-m4-ane-part-4/">Part 4</a> mapped those descriptors and the hardware they configure. This article follows the compiler that produces them, from MIL input to HWX output. It also describes a research compiler built from decompilation and live traces, with its output tested on the M4.</p>
   </div>
+
+  <p class="repo-link"><strong>Research compiler:</strong> <a href="https://github.com/maderix/mil-hwx-compiler">MIL-to-HWX compiler on GitHub</a><span>Source code, build instructions, tests, and measured M4 results.</span></p>
 
   <nav class="toc" aria-label="Contents">
     <div class="toc-label">Contents</div>
