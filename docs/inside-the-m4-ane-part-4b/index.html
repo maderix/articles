@@ -1,0 +1,2139 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<meta name="description" content="Inside the M4 Apple Neural Engine, Part 4b: how Apple's private compiler turns a MIL graph into an HWX program.">
+<title>Inside the M4 ANE, Part 4b: Inside the Compiler</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;0,8..60,700;1,8..60,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+
+<style>
+  :root {
+    --bg: #fafaf8;
+    --fg: #1a1a18;
+    --fg-secondary: #565651;
+    --fg-muted: #7d7d75;
+    --accent: #c45230;
+    --green: #477566;
+    --blue: #4d6796;
+    --gold: #8b6842;
+    --plum: #765a78;
+    --surface: #f0efec;
+    --surface-2: #f6f5f2;
+    --border: #d6d5d0;
+    --code-bg: #ecebe7;
+    --diagram-bg: #f5f4f1;
+    --diagram-fill: #e8e7e3;
+    --diagram-stroke: #383834;
+    --shadow: rgba(30, 28, 24, .08);
+  }
+
+
+  :root[data-theme="dark"] {
+    --bg: #191918;
+    --fg: #e6e5df;
+    --fg-secondary: #b0afa7;
+    --fg-muted: #85847c;
+    --accent: #df7251;
+    --green: #70aa92;
+    --blue: #7d94c4;
+    --gold: #c09b68;
+    --plum: #aa83ad;
+    --surface: #252523;
+    --surface-2: #20201e;
+    --border: #3c3b37;
+    --code-bg: #2b2a27;
+    --diagram-bg: #232321;
+    --diagram-fill: #302f2b;
+    --diagram-stroke: #b8b6ad;
+    --shadow: rgba(0, 0, 0, .22);
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: "Source Serif 4", Georgia, "Times New Roman", serif;
+    font-size: clamp(17px, .5vw + 12px, 19px);
+    line-height: 1.6;
+  }
+
+  .article {
+    width: min(1180px, calc(100% - 48px));
+    margin: 0 auto;
+    padding: 32px 0 72px;
+  }
+
+  .measure { max-width: 100%; }
+  p { margin: 0 0 15px; color: color-mix(in srgb, var(--fg) 89%, var(--bg)); }
+  strong { color: var(--fg); font-weight: 600; }
+  em { color: var(--fg-secondary); }
+  a {
+    color: var(--accent);
+    text-decoration-thickness: 1px;
+    text-underline-offset: 2px;
+  }
+  code {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: .84em;
+    padding: 2px 5px;
+    border-radius: 3px;
+    background: var(--code-bg);
+    color: color-mix(in srgb, var(--accent) 72%, var(--fg));
+  }
+  pre {
+    overflow-x: auto;
+    margin: 18px 0 24px;
+    padding: 16px 18px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--code-bg);
+    color: var(--fg);
+    font: 13px/1.6 "IBM Plex Mono", monospace;
+  }
+  pre code { padding: 0; background: none; color: inherit; }
+
+  .series-label {
+    margin-bottom: 12px;
+    color: var(--fg);
+    font-family: "Source Serif 4", Georgia, "Times New Roman", serif;
+    font-size: inherit;
+    font-weight: 400;
+    line-height: inherit;
+    letter-spacing: normal;
+    text-transform: none;
+  }
+  h1 {
+    max-width: none;
+    margin: 0 0 8px;
+    font-family: "Source Serif 4", Georgia, serif;
+    font-size: 36px;
+    font-weight: 700;
+    line-height: 1.2;
+    letter-spacing: normal;
+    text-wrap: balance;
+  }
+  .subtitle {
+    max-width: none;
+    margin: 0 0 20px;
+    color: var(--fg-secondary);
+    font-size: 19px;
+    font-style: italic;
+    line-height: 1.5;
+    text-wrap: balance;
+  }
+  .byline {
+    margin-bottom: 30px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+    color: var(--fg-muted);
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 13px;
+    line-height: 1.6;
+  }
+  h2 {
+    position: relative;
+    max-width: 100%;
+    margin: 50px 0 14px;
+    padding-top: 18px;
+    border-top: 2px solid var(--accent);
+    font-family: "Source Serif 4", Georgia, serif;
+    font-size: 26px;
+    font-weight: 600;
+    line-height: 1.6;
+    text-wrap: balance;
+  }
+  h2::before {
+    display: block;
+    margin-bottom: 7px;
+    color: var(--accent);
+    content: attr(data-kicker);
+    font: 500 11px/1.3 "IBM Plex Mono", monospace;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+  }
+  h2.plain::before { content: none; }
+  h3 {
+    max-width: 100%;
+    margin: 30px 0 10px;
+    padding-left: 11px;
+    border-left: 3px solid var(--accent);
+    font-family: "Source Serif 4", Georgia, serif;
+    font-size: 20px;
+    font-weight: 600;
+    line-height: 1.6;
+  }
+  h2 + p { font-size: 1.06em; }
+
+  .chapter {
+    --tone: var(--accent);
+    position: relative;
+    margin: 34px 0 8px;
+    padding: 1px 24px 14px;
+    border-left: 2px solid color-mix(in srgb, var(--tone) 58%, var(--border));
+    background: linear-gradient(90deg,
+      color-mix(in srgb, var(--tone) 6%, var(--bg)),
+      color-mix(in srgb, var(--tone) 1.5%, var(--bg)) 70%,
+      transparent);
+  }
+  .chapter.green { --tone: var(--green); }
+  .chapter.blue { --tone: var(--blue); }
+  .chapter.gold { --tone: var(--gold); }
+  .chapter.plum { --tone: var(--plum); }
+  .chapter h2 { border-color: var(--tone); }
+  .chapter h2::before { color: var(--tone); }
+  .chapter h3 { border-color: var(--tone); }
+
+  .key {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 13px;
+    align-items: baseline;
+    max-width: 100%;
+    margin: 20px 0 24px;
+    padding: 12px 15px;
+    border: 1px solid color-mix(in srgb, var(--accent) 36%, var(--border));
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--accent) 8%, var(--bg));
+    font-size: 16px;
+  }
+  .key b {
+    color: var(--accent);
+    font: 500 10.5px/1.2 "IBM Plex Mono", monospace;
+    letter-spacing: .11em;
+    text-transform: uppercase;
+  }
+
+  .toc {
+    max-width: 1000px;
+    margin: 18px 0 28px;
+    padding: 14px 16px 12px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--surface-2);
+  }
+  .toc-label {
+    margin: 0 0 8px 6px;
+    color: var(--fg-muted);
+    font: 500 10.5px/1.3 "IBM Plex Mono", monospace;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+  }
+  .toc ol {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2px 18px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .toc li { --tone: var(--accent); }
+  .toc li.blue { --tone: var(--blue); }
+  .toc li.green { --tone: var(--green); }
+  .toc li.gold { --tone: var(--gold); }
+  .toc li.plum { --tone: var(--plum); }
+  .toc a {
+    display: grid;
+    grid-template-columns: 26px 1fr;
+    grid-template-rows: auto auto;
+    gap: 1px 10px;
+    padding: 7px 10px 7px 8px;
+    border-left: 3px solid color-mix(in srgb, var(--tone) 55%, var(--border));
+    border-radius: 0 4px 4px 0;
+    color: var(--fg);
+    text-decoration: none;
+    transition: background .12s, border-color .12s;
+  }
+  .toc a b {
+    grid-row: 1 / span 2;
+    padding-top: 4px;
+    color: var(--tone);
+    font: 500 11px/1 "IBM Plex Mono", monospace;
+    letter-spacing: .08em;
+  }
+  .toc a .t { font-size: 15px; line-height: 1.4; }
+  .toc a .s { color: var(--fg-muted); font: 10.5px/1.4 "IBM Plex Mono", monospace; }
+  .toc a:hover, .toc a:focus-visible {
+    background: color-mix(in srgb, var(--tone) 9%, var(--surface));
+    border-left-color: var(--tone);
+    outline: none;
+  }
+  .toc a:hover .t, .toc a:focus-visible .t { color: var(--tone); }
+
+  /* Stage strip: hover or focus a stage to read its role. */
+  .stg { cursor: pointer; transition: fill-opacity .12s; outline: none; }
+  .stg:hover, .stg:focus, .stg.on { fill-opacity: 1; stroke: var(--fg); stroke-width: 1.2; }
+  .strip-detail {
+    min-height: 92px;
+    margin-top: 10px;
+    padding: 11px 16px 12px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--surface) 56%, var(--diagram-bg));
+  }
+  .strip-detail .sd-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; margin-bottom: 6px; }
+  .strip-detail .sd-num { color: var(--fg-muted); font: 500 10.5px/1.3 "IBM Plex Mono", monospace; letter-spacing: .1em; text-transform: uppercase; }
+  .strip-detail .sd-name { font-size: 14px; font-weight: 600; color: var(--fg); padding: 2px 7px; }
+  .strip-detail .sd-phase { color: var(--fg-secondary); font: 500 10.5px/1.3 "IBM Plex Mono", monospace; letter-spacing: .08em; text-transform: uppercase; }
+  .strip-detail .sd-role { margin-left: auto; color: var(--fg-muted); font: 10.5px/1.3 "IBM Plex Mono", monospace; }
+  .strip-detail p { margin: 0; font-size: 15px; line-height: 1.5; }
+
+  /* Hover a band or box that carries data-stages to read which controller
+     functions run there. */
+  .st, .hov { cursor: default; }
+  .st .frame, .hov .frame { transition: stroke-width .12s, filter .12s; }
+  .st:hover .frame, .st.on .frame, .hov:hover .frame, .hov.on .frame { stroke-width: 2.2; filter: saturate(1.25); }
+  .stage-detail {
+    min-height: 74px;
+    margin-top: 10px;
+    padding: 10px 16px 11px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--surface) 56%, var(--diagram-bg));
+    font-size: 15px;
+    line-height: 1.5;
+  }
+  .stage-detail .sd-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; margin-bottom: 5px; }
+  .stage-detail .sd-title { font-weight: 600; color: var(--fg); }
+  .stage-detail .sd-range { color: var(--fg-muted); font: 500 10.5px/1.3 "IBM Plex Mono", monospace; letter-spacing: .1em; text-transform: uppercase; }
+  .stage-detail .sd-fns { display: flex; flex-wrap: wrap; gap: 5px 6px; margin: 4px 0 6px; }
+  .stage-detail .sd-fns code { font-size: 12px; padding: 2px 6px; cursor: default; }
+  .stage-detail .sd-fns code:hover, .stage-detail .sd-fns code:focus { outline: none; background: color-mix(in srgb, var(--accent) 16%, var(--code-bg)); }
+  .stage-detail p { margin: 0; font-size: 14.5px; color: var(--fg-secondary); }
+  .stage-detail .sd-hint { color: var(--fg-muted); font: 11px/1.4 "IBM Plex Mono", monospace; }
+
+  .evidence-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 18px 0 24px;
+  }
+  .evidence {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 5px 9px;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    color: var(--fg-secondary);
+    background: var(--surface-2);
+    font: 11px/1.3 "IBM Plex Mono", monospace;
+  }
+  .evidence i { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+  .evidence.static i { background: var(--blue); }
+  .evidence.experiment i { background: var(--green); }
+  .evidence.open i { background: var(--gold); }
+
+  figure {
+    width: 100%;
+    max-width: 1180px;
+    margin: 24px auto 32px;
+  }
+  .figure-shell {
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: var(--diagram-bg);
+    box-shadow: 0 8px 30px var(--shadow);
+  }
+  .figure-scroll { overflow-x: auto; overscroll-behavior-inline: contain; }
+  figure svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    color: var(--diagram-stroke);
+  }
+  figure.complex svg { min-width: 760px; }
+  figure svg text { font-family: "IBM Plex Mono", monospace; }
+  figure svg text:not([fill]), .map svg text:not([fill]) { fill: currentColor; }
+  figure.dense svg { min-width: 900px; }
+  figcaption {
+    max-width: 100%;
+    margin-top: 10px;
+    color: color-mix(in srgb, var(--fg) 62%, var(--bg));
+    font-size: 14px;
+    font-style: italic;
+    line-height: 1.5;
+  }
+
+  .table-wrap { max-width: 1000px; overflow-x: auto; margin: 20px 0 26px; }
+  table {
+    width: 100%;
+    min-width: 660px;
+    border-collapse: collapse;
+    font-size: 15px;
+    font-variant-numeric: tabular-nums;
+  }
+  th {
+    padding: 9px 12px;
+    border-bottom: 2px solid var(--border);
+    background: var(--surface);
+    color: var(--fg-secondary);
+    text-align: left;
+    font: 500 11px/1.35 "IBM Plex Mono", monospace;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+  }
+  td { padding: 9px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr:nth-child(even) td { background: color-mix(in srgb, var(--surface) 48%, transparent); }
+
+  /* Landscape map: every compiler component in one drawing. */
+  .map { max-width: 1180px; margin: 24px auto 32px; }
+  .map svg text { font-family: "IBM Plex Mono", monospace; }
+  .map .figure-shell svg { min-width: 760px; }
+  .map-note {
+    max-width: 860px;
+    margin: 10px 0 0;
+    color: var(--fg-muted);
+    font: 12px/1.5 "IBM Plex Mono", monospace;
+  }
+
+  details {
+    max-width: 900px;
+    margin: 18px 0;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--surface-2);
+  }
+  summary {
+    padding: 11px 14px;
+    cursor: pointer;
+    color: var(--fg-secondary);
+    font: 500 12px/1.4 "IBM Plex Mono", monospace;
+  }
+  details .inside { padding: 0 16px 14px; font-size: 15px; }
+  details ul { margin: 6px 0 0; padding-left: 21px; }
+  details li { margin-bottom: 5px; }
+
+  .ref-list { max-width: 920px; font-size: 15px; line-height: 1.6; }
+  .ref-list li { margin-bottom: 9px; }
+  hr { border: none; border-top: 1px solid var(--border); margin: 32px 0; }
+  .theme-toggle {
+    position: fixed;
+    right: 14px;
+    top: 14px;
+    z-index: 8;
+    padding: 6px 9px;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    color: var(--fg-secondary);
+    backdrop-filter: blur(8px);
+    cursor: pointer;
+    font: 10px/1.2 "IBM Plex Mono", monospace;
+  }
+  .theme-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  @media (max-width: 760px) {
+    .article { width: calc(100% - 28px); padding: 24px 0 52px; }
+    .chapter { margin-left: -7px; margin-right: -7px; padding: 1px 14px 10px; }
+    .key { grid-template-columns: 1fr; gap: 5px; }
+    .map-note { font-size: 11px; }
+    .toc ol { grid-template-columns: 1fr; }
+    .theme-toggle { position: absolute; }
+  }
+
+  @media (max-width: 600px) {
+    h1 { font-size: 28px; }
+  }
+
+  @media print {
+    .theme-toggle { display: none; }
+    .map { break-inside: avoid; }
+    .figure-shell { box-shadow: none; }
+  }
+</style>
+</head>
+
+<body>
+<button class="theme-toggle" id="theme-toggle" type="button" aria-label="Toggle dark mode">dark</button>
+
+<article class="article">
+  <div class="series-label">Inside the M4 Apple Neural Engine · Part 4b</div>
+  <h1>Inside the Compiler</h1>
+  <p class="subtitle">What happens between a MIL graph and the HWX program executed by the M4 Neural Engine</p>
+  <div class="byline">manjeet singh · August 2026</div>
+
+  <div class="measure">
+    <p>Apple's Neural Engine runs compiled programs. A neural network enters the compiler as a MIL graph (Apple's language for machine-learning operations) and comes out as an HWX binary. That binary is a Mach-O file whose main payload is a stream of Task Descriptors, the register-write records that configure the hardware for one run.</p>
+
+    <p><a href="../inside-the-m4-ane-part-4/">Part 4</a> mapped those descriptors and the hardware they configure. This article follows the compiler that produces them, from MIL input to HWX output. It also describes a research compiler built from decompilation and live traces, with its output tested on the M4.</p>
+  </div>
+
+  <nav class="toc" aria-label="Contents">
+    <div class="toc-label">Contents</div>
+    <ol>
+      <li class="blue"><a href="#front-ends"><b>01</b><span class="t">The compiler process and its front ends</span><span class="s">XPC service · MIL.framework · MLIR route</span></a></li>
+      <li class="green"><a href="#live-trace"><b>02</b><span class="t">The 34 controller stages of one compile</span><span class="s">live trace · stages 1–34 · four levels</span></a></li>
+      <li class="gold"><a href="#zin-ir"><b>03</b><span class="t">Zin IR: graph recognition and canonicalization</span><span class="s">stage 5</span></a></li>
+      <li class="blue"><a href="#fusion"><b>04</b><span class="t">Zin MIR preparation: lowering, splitting, two fusion rounds</span><span class="s">stages 6–7 · probes · --O0 / --O1</span></a></li>
+      <li class="plum"><a href="#mir-builder"><b>05</b><span class="t">MIR builder: engines, execution modes, double-int8</span><span class="s">stage 8</span></a></li>
+      <li class="green"><a href="#backend"><b>06</b><span class="t">Machine backend: scheduling, allocation, object generation</span><span class="s">stages 9–34</span></a></li>
+      <li class="gold"><a href="#intermediates"><b>07</b><span class="t">Compiler options and retained debug output</span><span class="s">option mapping · status plist · partition JSON · stubbed dumps</span></a></li>
+      <li class="accent"><a href="#model"><b>08</b><span class="t">One convolution, end to end</span><span class="s">the map, walked once</span></a></li>
+      <li class="blue"><a href="#research-compiler"><b>09</b><span class="t">The research compiler and its M4 results</span><span class="s">coverage · latency · ANE activity</span></a></li>
+      <li class="gold"><a href="#open-questions"><b>10</b><span class="t">Unmapped parts of the compiler</span><span class="s">four open questions</span></a></li>
+    </ol>
+  </nav>
+
+  <div class="measure">
+    <p>The compiler decides which operations share one hardware step (fusion), how tensors are tiled and laid out in memory, which numeric mode to use, where data lives in SRAM, and how DMA transfers are scheduled. We traced these decisions on an M4 running macOS 26.3 with compiler version 9.202.0 targeting the H16G machine model.</p>
+
+    <p>The method is the same throughout. We load <code>ANECompiler.framework</code> into our own process, call <code>ANECCompile</code>, and attach LLDB. Breakpoints on the compiler's controller functions give the order of stages. Static disassembly gives what each stage does. Compiler options and retained debug files fill in the policy; byte comparisons of the emitted HWX confirm it. The evidence comes from independent live debugging, static disassembly, controlled experiments, and published community work.</p>
+
+    <p>The test inputs (probes) range from a single convolution to branches, residuals, per-channel affine work, a composed attention block, and a four-layer W8A8 chain (W8A8 means 8-bit weights and 8-bit activations).</p>
+  </div>
+
+  <div class="evidence-row" aria-label="Evidence labels used in this article">
+    <span class="evidence"><i></i>observed in a successful compile</span>
+    <span class="evidence static"><i></i>symbols or disassembly</span>
+    <span class="evidence experiment"><i></i>controlled experiment</span>
+    <span class="evidence open"><i></i>still open</span>
+  </div>
+
+  <div class="key">
+    <b>Result</b>
+    <span>The tested path is <code>MIL.framework → Zin IR → Zin MIR → scheduler and allocators → Task Descriptors → HWX</code>. Zin is the internal name of the compiler core. It runs thirty-four controller stages in a fixed order. The MIR preparation stage runs fusion twice: a broad round before engine lowering and a narrow round after. In every traced compile, the MIL route entered Zin directly. Breakpoints on the embedded MLIR parser and pass manager did not fire.</span>
+  </div>
+
+  <div class="measure">
+    <p>The map below shows every component we found, in the order a program passes through them. Each box names the section that examines it and the trace stages it covers. Dashed boxes are components beside the main path: a second front end, a conditional solver, and the compiler's own debug surfaces. The sections that follow walk down the map one band at a time.</p>
+  </div>
+
+  <div class="map" id="compiler-map">
+      <div class="figure-shell figure-scroll">
+        <svg viewBox="0 0 900 794" role="img" aria-label="Landscape of the ANE compiler. Input enters ANECompilerService, which dispatches one of six front ends. MIL.framework parses and Zin imports the graph. Inside ANECompiler.framework the Zin compiler runs three levels: Zin IR recognition, Zin MIR preparation with two fusion rounds around engine lowering, and the MIR builder that picks engines and modes. The machine backend schedules, allocates, spills, analyzes hazards, generates pieces, allocates memory cache, materializes hardware state, builds the compute program and writes the HWX object. Side components: the MLIR route, named debug checkpoints, the conditional libORTools solver, and retained debug files.">
+          <defs>
+            <marker id="land-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0L7 3.5L0 7Z" fill="var(--diagram-stroke)"/></marker>
+            <marker id="land-hot" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0L7 3.5L0 7Z" fill="var(--accent)"/></marker>
+            <marker id="land-blue" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0L7 3.5L0 7Z" fill="var(--blue)"/></marker>
+            <marker id="land-gold" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0L7 3.5L0 7Z" fill="var(--gold)"/></marker>
+            <marker id="land-plum" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0L7 3.5L0 7Z" fill="var(--plum)"/></marker>
+          </defs>
+          <rect width="900" height="794" fill="var(--diagram-bg)"/>
+          <text x="28" y="24" font-size="12" fill="var(--fg-muted)" letter-spacing="1.5">THE COMPILER, END TO END · MIL TEXT → HWX PROGRAM</text>
+          <text x="872" y="24" text-anchor="end" font-size="11" fill="var(--fg-muted)">stage numbers from the 34-stage trace · §02</text>
+
+          <!-- Band A · input and front-end dispatch -->
+          <g class="st" id="m-a" tabindex="0" data-title="ANECompilerService.xpc · front-end dispatch">
+            <rect class="frame" x="28" y="40" width="642" height="100" rx="4" fill="var(--surface-2)" stroke="var(--border)"/>
+            <text x="42" y="63" font-size="14" font-weight="600" fill="var(--blue)">ANECompilerService.xpc</text>
+            <text x="42" y="81" font-size="11.5" fill="var(--fg-muted)">sandboxed XPC process · chooses a front end by model type</text>
+            <text x="658" y="63" text-anchor="end" font-size="11" fill="var(--fg-muted)">§01</text>
+            <g font-size="12.5" text-anchor="middle">
+              <rect x="36" y="96" width="96" height="32" rx="3" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/><text x="84" y="117">Core ML</text>
+              <rect x="142" y="96" width="96" height="32" rx="3" fill="var(--accent)" fill-opacity=".14" stroke="var(--accent)" stroke-width="1.5"/><text x="190" y="117" font-weight="600" fill="var(--accent)">MIL</text>
+              <rect x="248" y="96" width="96" height="32" rx="3" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/><text x="296" y="117">MLIR</text>
+              <rect x="354" y="96" width="96" height="32" rx="3" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/><text x="402" y="117">ANECIR</text>
+              <rect x="460" y="96" width="96" height="32" rx="3" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/><text x="508" y="117">CVAIR</text>
+              <rect x="566" y="96" width="96" height="32" rx="3" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/><text x="614" y="117">LLIR bundle</text>
+            </g>
+          </g>
+          <g class="st" id="m-mlir" tabindex="0" data-title="MLIR / MPS route · a second front end beside the traced one">
+            <rect class="frame" x="690" y="52" width="182" height="80" rx="4" fill="none" stroke="var(--blue)" stroke-dasharray="4 4"/>
+            <text x="700" y="72" font-size="12.5" font-weight="600" fill="var(--blue)">MLIR / MPS route</text>
+            <text x="700" y="90" font-size="11" fill="var(--fg-secondary)">parseSourceFile</text>
+            <text x="700" y="105" font-size="11" fill="var(--fg-secondary)">PassManager::run</text>
+            <text x="700" y="121" font-size="11" fill="var(--fg-muted)">separate route · §01</text>
+          </g>
+          <path d="M296 128V134H680V92H688" fill="none" stroke="var(--blue)" stroke-dasharray="3 3" marker-end="url(#land-blue)"/>
+          <path id="m-p-ab" d="M190 128V156" stroke="var(--accent)" stroke-width="2" marker-end="url(#land-hot)"/>
+
+          <!-- Band B · parse and import -->
+          <g class="st" id="m-b" tabindex="0" data-stages="1-4" data-title="MIL.framework parses · Zin imports">
+            <rect class="frame" x="28" y="158" width="642" height="60" rx="4" fill="var(--diagram-fill)" stroke="var(--gold)"/>
+            <text x="42" y="181" font-size="14" font-weight="600" fill="var(--gold)">MIL.framework parses · Zin imports</text>
+            <text x="42" y="200" font-size="11.5" fill="var(--fg-secondary)">MIL IR → BuildLayerGraph → control-flow graph prepared and validated</text>
+            <text x="658" y="181" text-anchor="end" font-size="11" fill="var(--fg-muted)">stages 1–4 · §01</text>
+          </g>
+          <path id="m-p-bc" d="M349 218V240" stroke="var(--diagram-stroke)" marker-end="url(#land-arrow)"/>
+
+          <!-- Band C · the Zin compiler, three levels -->
+          <rect x="28" y="232" width="642" height="288" rx="5" fill="var(--surface)" stroke="var(--diagram-stroke)"/>
+          <text x="42" y="252" font-size="12.5" font-weight="600">ANECompiler.framework · Zin compiler</text>
+          <text x="658" y="252" text-anchor="end" font-size="11" fill="var(--fg-muted)">LLVM + MLIR embedded · no hits on the MIL compiles</text>
+
+          <g class="st" id="m-c1" tabindex="0" data-stages="5" data-title="Zin IR · recognize and canonicalize">
+            <rect class="frame" x="40" y="262" width="618" height="60" rx="4" fill="var(--accent)" fill-opacity=".09" stroke="var(--accent)"/>
+            <text x="54" y="285" font-size="14" font-weight="600" fill="var(--accent)">Zin IR · recognize and canonicalize</text>
+            <text x="54" y="304" font-size="11.5" fill="var(--fg-secondary)">constants · DCE · variance and normalization forms · matmul → conv · Q/DQ folding</text>
+            <text x="646" y="285" text-anchor="end" font-size="11" fill="var(--fg-muted)">stage 5 · §03</text>
+          </g>
+          <path id="m-p-c12" d="M349 322V334" stroke="var(--diagram-stroke)" marker-end="url(#land-arrow)"/>
+
+          <g class="st" id="m-c2" tabindex="0" data-stages="6-7" data-title="Zin MIR prepare · two fusion rounds around engine lowering">
+            <rect class="frame" x="40" y="336" width="618" height="94" rx="4" fill="var(--green)" fill-opacity=".09" stroke="var(--green)"/>
+            <text x="54" y="359" font-size="14" font-weight="600" fill="var(--green)">Zin MIR prepare · make the graph implementable</text>
+            <text x="646" y="359" text-anchor="end" font-size="11" fill="var(--fg-muted)">stages 6–7 · §04</text>
+            <g text-anchor="middle">
+              <rect x="54" y="374" width="104" height="42" rx="3" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/>
+              <text x="106" y="390" font-size="11">prepare graph</text><text x="106" y="406" font-size="10" fill="var(--fg-muted)">hoist · CSE</text>
+              <rect x="166" y="374" width="146" height="42" rx="3" fill="var(--green)" fill-opacity=".14" stroke="var(--green)" stroke-width="1.5"/>
+              <text x="239" y="390" font-size="11" font-weight="600">broad fusion</text><text x="239" y="406" font-size="10" fill="var(--fg-muted)">graph layers · +2176</text>
+              <rect x="320" y="374" width="156" height="42" rx="3" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/>
+              <text x="398" y="390" font-size="11">engine lowering</text><text x="398" y="406" font-size="10" fill="var(--fg-muted)">channel-last · GOC</text>
+              <rect x="484" y="374" width="160" height="42" rx="3" fill="var(--green)" fill-opacity=".14" stroke="var(--green)" stroke-width="1.5"/>
+              <text x="564" y="390" font-size="11" font-weight="600">narrow fusion</text><text x="564" y="406" font-size="10" fill="var(--fg-muted)">engine layers · +3916</text>
+            </g>
+            <path d="M158 395H164" stroke="var(--diagram-stroke)" marker-end="url(#land-arrow)"/><path d="M312 395H318" stroke="var(--diagram-stroke)" marker-end="url(#land-arrow)"/><path d="M476 395H482" stroke="var(--diagram-stroke)" marker-end="url(#land-arrow)"/>
+          </g>
+          <g class="st" id="m-chk" tabindex="0" data-title="Named checkpoints · reached, but the graph writers are stubs">
+            <rect class="frame" x="690" y="336" width="182" height="114" rx="4" fill="none" stroke="var(--gold)" stroke-dasharray="4 4"/>
+            <text x="700" y="356" font-size="12.5" font-weight="600" fill="var(--gold)">Named checkpoints</text>
+            <text x="700" y="373" font-size="10.5" fill="var(--fg-secondary)">before_fusion</text>
+            <text x="700" y="387" font-size="10.5" fill="var(--fg-secondary)">after_fusion</text>
+            <text x="700" y="401" font-size="10.5" fill="var(--fg-secondary)">after_engine_lowering</text>
+            <text x="700" y="415" font-size="10.5" fill="var(--fg-secondary)">after_fusion2</text>
+            <text x="700" y="429" font-size="10.5" fill="var(--fg-secondary)">after_mir_opt</text>
+            <text x="700" y="443" font-size="10.5" fill="var(--fg-muted)">after_reg_spill · §07</text>
+          </g>
+          <path d="M658 393H688" stroke="var(--gold)" stroke-dasharray="3 3" marker-end="url(#land-gold)"/>
+          <path id="m-p-c23" d="M349 430V442" stroke="var(--diagram-stroke)" marker-end="url(#land-arrow)"/>
+
+          <g class="st" id="m-c3" tabindex="0" data-stages="8" data-title="MIR builder · engines and execution modes">
+            <rect class="frame" x="40" y="444" width="618" height="60" rx="4" fill="var(--blue)" fill-opacity=".09" stroke="var(--blue)"/>
+            <text x="54" y="467" font-size="14" font-weight="600" fill="var(--blue)">MIR builder · choose engines and modes</text>
+            <text x="54" y="486" font-size="11.5" fill="var(--fg-secondary)">active NE · reassignment · double-int8 · large kernel · legalizers · ANE assignment</text>
+            <text x="646" y="467" text-anchor="end" font-size="11" fill="var(--fg-muted)">stage 8 · §05</text>
+          </g>
+          <path id="m-p-cd" d="M349 504V536" stroke="var(--diagram-stroke)" marker-end="url(#land-arrow)"/>
+
+          <!-- Band D · machine backend -->
+          <rect x="28" y="536" width="642" height="154" rx="5" fill="var(--plum)" fill-opacity=".05" stroke="var(--plum)"/>
+          <text x="42" y="556" font-size="12.5" font-weight="600" fill="var(--plum)">Machine backend</text>
+          <text x="658" y="552" text-anchor="end" font-size="11" fill="var(--fg-muted)">stages 9–34 · §06</text>
+
+          <g class="st" id="m-d1" tabindex="0" data-stages="9-13" data-title="Backend · task scheduling and constrained allocation">
+            <g text-anchor="middle">
+              <rect class="frame" x="36" y="568" width="96" height="44" rx="3" fill="var(--diagram-fill)" stroke="var(--blue)"/>
+              <text x="84" y="586" font-size="11">Scheduler</text><text x="84" y="602" font-size="10" fill="var(--fg-muted)">stage 9</text>
+              <rect class="frame" x="142" y="568" width="96" height="44" rx="3" fill="var(--diagram-fill)" stroke="var(--gold)"/>
+              <text x="190" y="586" font-size="11">CP allocator</text><text x="190" y="602" font-size="10" fill="var(--fg-muted)">stages 11–13</text>
+            </g>
+            <path d="M132 590H140" stroke="var(--diagram-stroke)" marker-end="url(#land-arrow)"/>
+          </g>
+          <g class="st" id="m-d2" tabindex="0" data-stages="14-19" data-title="Backend · spilling, hazards, pieces, memory cache">
+            <g text-anchor="middle">
+              <rect class="frame" x="248" y="568" width="96" height="44" rx="3" fill="var(--diagram-fill)" stroke="var(--plum)"/>
+              <text x="296" y="586" font-size="11">Spilling</text><text x="296" y="602" font-size="10" fill="var(--fg-muted)">stages 14–15</text>
+              <rect class="frame" x="354" y="568" width="96" height="44" rx="3" fill="var(--diagram-fill)" stroke="var(--accent)"/>
+              <text x="402" y="586" font-size="11">Hazards · deps</text><text x="402" y="602" font-size="10" fill="var(--fg-muted)">stages 16–17</text>
+              <rect class="frame" x="460" y="568" width="96" height="44" rx="3" fill="var(--diagram-fill)" stroke="var(--green)"/>
+              <text x="508" y="586" font-size="11">Pieces</text><text x="508" y="602" font-size="10" fill="var(--fg-muted)">stage 18</text>
+              <rect class="frame" x="566" y="568" width="96" height="44" rx="3" fill="var(--diagram-fill)" stroke="var(--blue)"/>
+              <text x="614" y="586" font-size="11">Memory cache</text><text x="614" y="602" font-size="10" fill="var(--fg-muted)">stage 19</text>
+            </g>
+            <path d="M238 590H246" stroke="var(--diagram-stroke)" marker-end="url(#land-arrow)"/><path d="M344 590H352" stroke="var(--diagram-stroke)" marker-end="url(#land-arrow)"/><path d="M450 590H458" stroke="var(--diagram-stroke)" marker-end="url(#land-arrow)"/><path d="M556 590H564" stroke="var(--diagram-stroke)" marker-end="url(#land-arrow)"/>
+          </g>
+          <path id="m-p-d12" d="M614 612V620H204V626" fill="none" stroke="var(--diagram-stroke)" marker-end="url(#land-arrow)"/>
+
+          <g class="st" id="m-d3" tabindex="0" data-stages="20-28" data-title="Backend · materialize hardware state">
+            <rect class="frame" x="36" y="628" width="336" height="44" rx="3" fill="var(--diagram-fill)" stroke="var(--gold)"/>
+            <text x="204" y="646" text-anchor="middle" font-size="11">Materialize hardware state</text>
+            <text x="204" y="662" text-anchor="middle" font-size="10" fill="var(--fg-muted)">stages 20–28 · binary point · split row · prefetch</text>
+          </g>
+          <g class="st" id="m-d4" tabindex="0" data-stages="29-34" data-title="Backend · compute program and HWX object">
+            <rect class="frame" x="384" y="628" width="132" height="44" rx="3" fill="var(--diagram-fill)" stroke="var(--plum)"/>
+            <text x="450" y="646" text-anchor="middle" font-size="10.5">BuildComputeProgram</text>
+            <text x="450" y="662" text-anchor="middle" font-size="10" fill="var(--fg-muted)">stage 29</text>
+            <rect class="frame" x="528" y="628" width="134" height="44" rx="3" fill="var(--accent)" fill-opacity=".12" stroke="var(--accent)"/>
+            <text x="595" y="646" text-anchor="middle" font-size="11" font-weight="600">CodeGen object</text>
+            <text x="595" y="662" text-anchor="middle" font-size="10" fill="var(--fg-muted)">33–34 · live IO</text>
+          </g>
+          <path d="M372 650H382" stroke="var(--diagram-stroke)" marker-end="url(#land-arrow)"/><path d="M516 650H526" stroke="var(--diagram-stroke)" marker-end="url(#land-arrow)"/>
+          <g class="st" id="m-or" tabindex="0" data-title="libORTools.dylib · loaded only for the two-branch graph">
+            <rect class="frame" x="690" y="568" width="182" height="80" rx="4" fill="none" stroke="var(--plum)" stroke-dasharray="4 4"/>
+            <text x="700" y="588" font-size="12.5" font-weight="600" fill="var(--plum)">libORTools.dylib</text>
+            <text x="700" y="605" font-size="10.5" fill="var(--fg-secondary)">CP allocator · transposer</text>
+            <text x="700" y="620" font-size="10.5" fill="var(--fg-secondary)">memcache allocator</text>
+            <text x="700" y="635" font-size="10.5" fill="var(--fg-muted)">two-branch graphs · §01</text>
+          </g>
+          <path d="M190 568V561H680V608H688" fill="none" stroke="var(--plum)" stroke-dasharray="3 3" marker-end="url(#land-plum)"/>
+          <path id="m-p-de" d="M595 672V704" stroke="var(--accent)" stroke-width="2" marker-end="url(#land-hot)"/>
+
+          <!-- Band E · output -->
+          <g class="st" id="m-e" tabindex="0" data-title="HWX object · what the loader receives">
+            <rect class="frame" x="28" y="706" width="642" height="72" rx="4" fill="var(--accent)" fill-opacity=".13" stroke="var(--accent)"/>
+            <text x="42" y="730" font-size="14" font-weight="600">HWX object · 0xBEEFFACE Mach-O</text>
+            <text x="42" y="750" font-size="11.5" fill="var(--fg-secondary)">__TEXT.__text TD stream · __KERN_0 kernels or LUT · __FVMLIB in / out descriptors</text>
+            <text x="42" y="766" font-size="10.5" fill="var(--fg-muted)">compiler metadata · live IO layout</text>
+            <text x="658" y="730" text-anchor="end" font-size="11" fill="var(--fg-muted)">→ loader and hardware · Part 4</text>
+          </g>
+          <g class="st" id="m-dbg" tabindex="0" data-title="Retained debug files · status plist and partition JSON">
+            <rect class="frame" x="690" y="706" width="182" height="72" rx="4" fill="none" stroke="var(--gold)" stroke-dasharray="4 4"/>
+            <text x="700" y="727" font-size="12.5" font-weight="600" fill="var(--gold)">Retained debug files</text>
+            <text x="700" y="744" font-size="10.5" fill="var(--fg-secondary)">status plist</text>
+            <text x="700" y="758" font-size="10.5" fill="var(--fg-secondary)">init.json · refine.json</text>
+            <text x="700" y="772" font-size="10.5" fill="var(--fg-muted)">--debug flags · §07</text>
+          </g>
+          <path d="M670 742H688" stroke="var(--gold)" stroke-dasharray="3 3" marker-end="url(#land-gold)"/>
+        </svg>
+      </div>
+
+      <div class="stage-detail" id="map-detail" aria-live="polite">
+        <div class="sd-head"><span class="sd-title" id="md-title">Hover a box to see which controller functions run there</span><span class="sd-range" id="md-range"></span></div>
+        <div class="sd-fns" id="md-fns"></div>
+        <p id="md-copy">Solid boxes are the traced MIL path. Dashed boxes exist in the binary beside it. Stage numbers count the 34 controller functions that fired for one convolution compile (§02).</p>
+      </div>
+    </div>
+
+  <section class="chapter blue" id="front-ends">
+    <h2 data-kicker="01 · Front end">The compiler process and its front ends</h2>
+
+    <div class="measure">
+      <p>Compilation normally runs inside <code>ANECompilerService.xpc</code>, a sandboxed helper process. Core ML and the <code>_ANEClient</code> API reach it over XPC. The service holds separate compiler classes for different model types (MIL, MLIR, Core ML, ANECIR, CVAIR, and an Espresso translator) and picks one based on the input format. Every trace in this article follows the MIL route.</p>
+
+      <p>There is also a direct path. The same <code>ANECompiler.framework</code> can be loaded into any process and called through its exported <code>ANECCompile</code> function. That is how this investigation ran: in-process, with LLDB attached, so every symbol in the framework was reachable.</p>
+    </div>
+
+    <figure class="complex">
+          <div class="figure-shell figure-scroll">
+            <svg viewBox="0 0 900 340" role="img" aria-label="Process boundary. An app reaches the compiler either through Core ML or _ANEClient, which send an XPC request to the sandboxed ANECompilerService, or by loading ANECompiler.framework and calling ANECCompile in-process, which is how this article traced it. Inside the service sit MIL.framework, ANECompiler.framework with LLVM and MLIR statically embedded, and the lazily loaded libORTools.dylib. Output is model.hwx plus optional status and partition files.">
+              <defs>
+                <marker id="proc-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0L7 3.5L0 7Z" fill="var(--diagram-stroke)"/></marker>
+                <marker id="proc-hot" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0L7 3.5L0 7Z" fill="var(--accent)"/></marker>
+              </defs>
+              <rect width="900" height="340" fill="var(--diagram-bg)"/>
+              <text x="28" y="28" font-size="12" fill="var(--fg-muted)" letter-spacing="1.5">PROCESS BOUNDARY · TWO WAYS INTO ONE COMPILER</text>
+
+              <rect x="28" y="50" width="180" height="250" rx="4" fill="var(--surface-2)" stroke="var(--border)"/>
+              <text x="42" y="74" font-size="15" font-weight="600">Your process</text>
+              <text x="42" y="100" font-size="11.5">Core ML or _ANEClient</text>
+              <text x="42" y="117" font-size="11.5" fill="var(--fg-secondary)">compileModel → XPC</text>
+              <line x1="42" y1="136" x2="194" y2="136" stroke="var(--border)"/>
+              <text x="42" y="160" font-size="11.5">or dlopen ANECompiler</text>
+              <text x="42" y="177" font-size="11.5" fill="var(--fg-secondary)">ANECCompile in-process</text>
+              <text x="42" y="194" font-size="11.5" fill="var(--accent)">this article · LLDB</text>
+              <text x="42" y="272" font-size="11" fill="var(--fg-muted)">same framework,</text>
+              <text x="42" y="287" font-size="11" fill="var(--fg-muted)">no sandbox</text>
+
+              <rect x="250" y="50" width="400" height="250" rx="4" fill="var(--surface-2)" stroke="var(--blue)"/>
+              <text x="266" y="74" font-size="15" font-weight="600" fill="var(--blue)">ANECompilerService.xpc</text>
+              <text x="266" y="91" font-size="11.5" fill="var(--fg-muted)">sandboxed · dispatch by model type</text>
+
+              <rect x="266" y="106" width="368" height="46" rx="3" fill="var(--diagram-fill)" stroke="var(--gold)"/>
+              <text x="278" y="124" font-size="12.5" font-weight="600" fill="var(--gold)">MIL.framework</text>
+              <text x="278" y="141" font-size="11.5" fill="var(--fg-secondary)">parser · MIL IR · validation · libc++ / libSystem</text>
+
+              <rect x="266" y="160" width="368" height="68" rx="3" fill="var(--accent)" fill-opacity=".09" stroke="var(--accent)"/>
+              <text x="278" y="178" font-size="12.5" font-weight="600" fill="var(--accent)">ANECompiler.framework · Zin compiler</text>
+              <text x="278" y="196" font-size="11.5" fill="var(--fg-secondary)">links MIL · Accelerate · CoreFoundation</text>
+              <text x="278" y="213" font-size="11.5" fill="var(--fg-secondary)">LLVM + MLIR embedded · no separate dylib</text>
+
+              <rect x="266" y="238" width="368" height="48" rx="3" fill="none" stroke="var(--plum)" stroke-dasharray="4 4"/>
+              <text x="278" y="256" font-size="12.5" font-weight="600" fill="var(--plum)">libORTools.dylib · loaded lazily</text>
+              <text x="278" y="273" font-size="11.5" fill="var(--fg-secondary)">CP allocator · transposer · two-branch graphs</text>
+
+              <rect x="692" y="50" width="180" height="250" rx="4" fill="var(--diagram-fill)" stroke="var(--border)"/>
+              <text x="706" y="74" font-size="15" font-weight="600">Output directory</text>
+              <text x="706" y="100" font-size="12">model.hwx</text>
+              <text x="706" y="117" font-size="11.5" fill="var(--fg-secondary)">65,536 B (probe)</text>
+              <text x="706" y="144" font-size="12">probe.status.plist</text>
+              <text x="706" y="161" font-size="11.5" fill="var(--fg-secondary)">live IO · max DRAM</text>
+              <text x="706" y="188" font-size="12">init / refine.json</text>
+              <text x="706" y="205" font-size="11.5" fill="var(--fg-secondary)">partition scores</text>
+              <line x1="706" y1="228" x2="858" y2="228" stroke="var(--border)"/>
+              <text x="706" y="252" font-size="11" fill="var(--fg-muted)">→ aned loads it via</text>
+              <text x="706" y="267" font-size="11" fill="var(--fg-muted)">IOKit · Part 4</text>
+
+              <path d="M208 110H248" stroke="var(--diagram-stroke)" marker-end="url(#proc-arrow)"/>
+              <text x="228" y="103" text-anchor="middle" font-size="10.5" fill="var(--fg-muted)">XPC</text>
+              <path d="M208 178H264" stroke="var(--accent)" stroke-width="2" marker-end="url(#proc-hot)"/>
+              <text x="236" y="171" text-anchor="middle" font-size="10.5" fill="var(--accent)">direct</text>
+              <path d="M650 172H690" stroke="var(--diagram-stroke)" marker-end="url(#proc-arrow)"/>
+              <text x="670" y="165" text-anchor="middle" font-size="10.5" fill="var(--fg-muted)">writes</text>
+
+              <text x="450" y="326" text-anchor="middle" font-size="11" fill="var(--fg-muted)">The XPC service adds sandboxing and format dispatch. Calling ANECCompile directly exposes the same framework to a debugger.</text>
+            </svg>
+          </div>
+          <figcaption>Two ways to reach the same compiler framework: through the sandboxed XPC service, or directly via <code>ANECCompile</code> with LLDB attached.</figcaption>
+        </figure>
+
+    <h3>Linked libraries</h3>
+
+    <div class="measure">
+      <p><code>ANECompiler.framework</code> links MIL, Accelerate, CoreFoundation, CoreAnalytics, libc++, libSystem, and ncurses. No LLVM or MLIR dynamic library is in that list. The framework has a large body of upstream LLVM and MLIR symbols, but they are all statically linked into the binary.</p>
+
+      <p>One more library loads on demand: <code>libORTools.dylib</code>, Google's operations-research solver. The framework resolves three entry points from it, all constraint-programming (CP) solvers: an allocator, a transposer, and a memory-cache allocator.</p>
+
+      <p>When does libORTools get pulled in? A plain convolution and serial convolution chains did not load it. A graph with two independent convolution branches did, and called the external transposer and CP allocator. Serial chains of every tested size stayed on the internal solver, so the trigger appears to be graph topology or placement pressure rather than graph size.</p>
+    </div>
+
+    <div class="table-wrap">
+          <table>
+            <thead><tr><th>Component</th><th>Observed role</th><th>Current evidence</th></tr></thead>
+            <tbody>
+              <tr><td><code>MIL.framework</code></td><td>Parse and validate the MIL program</td><td>Symbols, objects, successful compile</td></tr>
+              <tr><td><code>ANECompiler.framework</code></td><td>Zin IR, MIR and machine backend</td><td>LLDB trace and disassembly</td></tr>
+              <tr><td><code>libORTools.dylib</code></td><td>Conditional CP allocation, transposition and cache solving</td><td>Live branch-graph solver trace</td></tr>
+              <tr><td>AppleNeuralEngine</td><td>Program and runtime integration around the compiler service</td><td>XPC service dependency</td></tr>
+              <tr><td>Espresso</td><td>One model translation route</td><td>Service imports and translator class</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+    <h3>The MIL route and the MLIR route</h3>
+
+    <div class="measure">
+      <p>The bundle's <code>DTCompiler = com.apple.compilers.llvm.clang.1_0</code> records the toolchain Apple used to build the framework. That is just the build tool. The framework has none of the Clang front-end classes (no ASTs, no source management, no code generation).</p>
+
+      <p>The framework does contain a complete MLIR stack: seven <code>MLIRContext</code> constructor sites, <code>mlir::parseSourceFile</code>, four <code>mlir::PassManager::run</code> sites, the Arith dialect, bufferization interfaces, and parser diagnostics. The XPC service has a dedicated <code>_ANEMLIRCompiler</code> class that uses them.</p>
+
+      <p>The question is whether the MIL route (the one this article traces) touches any of that MLIR code. We tested with auto-continuing breakpoints on the context constructors, parser, and pass manager. A convolution compiled to a 65,536-byte HWX and none of those breakpoints fired. The Zin controller functions ran normally.</p>
+
+      <p>An explicit <code>.mlir</code> input told a different story: it entered <code>MLIRContext</code>, <code>parseSourceFile</code>, and <code>PassManager::run</code>, accepting Apple's MPS dialect (<code>mps.*</code> and <code>mpsx.*</code>). The two routes share a binary but not a code path.</p>
+    </div>
+
+    <figure>
+          <div class="figure-shell">
+            <svg viewBox="0 0 760 330" role="img" aria-label="One binary, two routes. Inside ANECompiler.framework the traced MIL route runs MIL.framework, BuildLayerGraph, Zin IR, Zin MIR, the backend and HWX with zero hits on MLIRContext, parseSourceFile and PassManager::run. The explicit .mlir route hits MLIRContext, parseSourceFile with mps and mpsx operations, and PassManager::run; where its graph becomes hardware IR is not yet mapped. The Clang marker names the build tool only.">
+              <defs>
+                <marker id="route-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0L7 3.5L0 7Z" fill="var(--diagram-stroke)"/></marker>
+              </defs>
+              <rect width="760" height="330" fill="var(--diagram-bg)"/>
+              <text x="26" y="28" font-size="11" fill="var(--fg-muted)" letter-spacing="1.4">ONE BINARY, TWO ROUTES</text>
+
+              <rect x="28" y="44" width="704" height="238" rx="5" fill="var(--surface-2)" stroke="var(--diagram-stroke)"/>
+              <text x="44" y="64" font-size="12" font-weight="600">ANECompiler.framework</text>
+              <text x="716" y="64" text-anchor="end" font-size="10" fill="var(--fg-muted)">DTCompiler = Apple Clang · build toolchain marker</text>
+              <line x1="380" y1="80" x2="380" y2="270" stroke="var(--border)"/>
+
+              <text x="48" y="94" font-size="11.5" font-weight="600" fill="var(--accent)">MIL route · traced</text>
+              <g font-size="10.5" text-anchor="middle">
+                <rect x="88" y="104" width="200" height="26" rx="3" fill="var(--diagram-fill)" stroke="var(--gold)"/><text x="188" y="121">MIL.framework parse</text>
+                <rect x="88" y="138" width="200" height="26" rx="3" fill="var(--diagram-fill)" stroke="var(--gold)"/><text x="188" y="155">BuildLayerGraph</text>
+                <rect x="88" y="172" width="200" height="26" rx="3" fill="var(--accent)" fill-opacity=".1" stroke="var(--accent)"/><text x="188" y="189">Zin IR → Zin MIR</text>
+                <rect x="88" y="206" width="200" height="26" rx="3" fill="var(--plum)" fill-opacity=".1" stroke="var(--plum)"/><text x="188" y="223">scheduler · backend</text>
+                <rect x="88" y="240" width="200" height="26" rx="3" fill="var(--accent)" fill-opacity=".14" stroke="var(--accent)"/><text x="188" y="257" font-weight="600">HWX · 65,536 B</text>
+              </g>
+              <path d="M188 130V136" stroke="var(--diagram-stroke)" marker-end="url(#route-arrow)"/><path d="M188 164V170" stroke="var(--diagram-stroke)" marker-end="url(#route-arrow)"/><path d="M188 198V204" stroke="var(--diagram-stroke)" marker-end="url(#route-arrow)"/><path d="M188 232V238" stroke="var(--diagram-stroke)" marker-end="url(#route-arrow)"/>
+              <circle cx="334" cy="148" r="30" fill="var(--green)" fill-opacity=".16" stroke="var(--green)"/>
+              <text x="334" y="144" text-anchor="middle" font-size="10" fill="var(--green)">upstream</text>
+              <text x="334" y="159" text-anchor="middle" font-size="12" font-weight="600" fill="var(--green)">0 hits</text>
+              <text x="334" y="196" text-anchor="middle" font-size="10" fill="var(--fg-muted)">MLIRContext</text>
+              <text x="334" y="209" text-anchor="middle" font-size="10" fill="var(--fg-muted)">parseSourceFile</text>
+              <text x="334" y="222" text-anchor="middle" font-size="10" fill="var(--fg-muted)">PassManager::run</text>
+
+              <text x="400" y="94" font-size="11.5" font-weight="600" fill="var(--blue)">Explicit .mlir route · separate</text>
+              <g font-size="10.5" text-anchor="middle">
+                <rect x="440" y="104" width="220" height="26" rx="3" fill="var(--blue)" fill-opacity=".1" stroke="var(--blue)"/><text x="550" y="121">MLIRContext</text>
+                <rect x="440" y="138" width="220" height="26" rx="3" fill="var(--blue)" fill-opacity=".1" stroke="var(--blue)"/><text x="550" y="155">parseSourceFile · mps.* / mpsx.*</text>
+                <rect x="440" y="172" width="220" height="26" rx="3" fill="var(--blue)" fill-opacity=".1" stroke="var(--blue)"/><text x="550" y="189">PassManager::run</text>
+                <rect x="440" y="206" width="220" height="26" rx="3" fill="none" stroke="var(--gold)" stroke-dasharray="4 4"/><text x="550" y="223" fill="var(--gold)">translation to Zin? · unmapped</text>
+              </g>
+              <path d="M550 130V136" stroke="var(--diagram-stroke)" marker-end="url(#route-arrow)"/><path d="M550 164V170" stroke="var(--diagram-stroke)" marker-end="url(#route-arrow)"/><path d="M550 198V204" stroke="var(--diagram-stroke)" marker-end="url(#route-arrow)"/>
+              <text x="550" y="257" text-anchor="middle" font-size="10" fill="var(--fg-muted)">not traced past the pass manager · §10</text>
+              <circle cx="696" cy="148" r="30" fill="var(--green)" fill-opacity=".16" stroke="var(--green)"/>
+              <text x="696" y="144" text-anchor="middle" font-size="10" fill="var(--green)">upstream</text>
+              <text x="696" y="159" text-anchor="middle" font-size="12" font-weight="600" fill="var(--green)">3 hits</text>
+
+              <text x="380" y="310" text-anchor="middle" font-size="11" fill="var(--fg-muted)">The upstream MLIR entry points fired for the .mlir probe and stayed silent for the MIL compiles.</text>
+            </svg>
+          </div>
+          <figcaption>The MIL route and the MLIR route share a binary but use separate code paths. Zero MLIR hits on the MIL compile; three on the <code>.mlir</code> probe.</figcaption>
+        </figure>
+
+    <h3>MIL parsing and import into Zin</h3>
+
+    <div class="measure">
+      <p><code>MIL.framework</code> parses the program text and its weight blob into its own graph representation: contexts, functions, operations, tensors, and validation objects. The first Zin function reached under LLDB is <code>BuildLayerGraph</code>. Everything after that call happens inside the hardware compiler.</p>
+    </div>
+  </section>
+
+  <section class="chapter green" id="live-trace">
+    <h2 data-kicker="02 · Live trace">The 34 controller stages of one compile</h2>
+
+    <div class="measure">
+      <p>The compiler is organized as a fixed pipeline. Each step is a controller function responsible for one transformation or decision. The symbol table gives their names; their order comes from a live trace.</p>
+
+      <p>To get the trace, we broke at <code>ANECCompile</code>, resolved every Zin controller once the framework had loaded, and set auto-continuing breakpoints on all of them. Then we let a 64-channel convolution compile to completion. Thirty-four controllers fired, in the same order on every repeat.</p>
+
+      <p>The strip below shows the trace in the order it fired. Hover or tap a box to see the function name, what it does, and how firmly that role is established. The full list is under the strip. A stage appearing here means its controller ran, though a small graph can pass through a stage without being changed by it.</p>
+    </div>
+
+    <figure class="complex">
+          <div class="figure-shell figure-scroll">
+            <svg id="stage-strip" viewBox="0 0 900 240" role="img" aria-label="Thirty-four controller stages in the order they fired for one convolution compile, grouped into six phases: import stages 1 to 4, optimize 5 to 7, plan 8 to 13, resolve 14 to 19, materialize 20 to 28, emit 29 to 34.">
+              <rect width="900" height="240" fill="var(--diagram-bg)"/>
+              <text x="28" y="30" font-size="12" fill="var(--fg-muted)" letter-spacing="1.4">ONE COMPILE · 34 CONTROLLER STAGES IN FIRING ORDER</text>
+
+              <g font-size="13" font-weight="600" text-anchor="middle">
+                <text x="76.8" y="58" fill="var(--gold)">Import</text>
+                <text x="163.6" y="58" fill="var(--accent)">Optimize</text>
+                <text x="275.3" y="58" fill="var(--green)">Plan</text>
+                <text x="424.3" y="58" fill="var(--blue)">Resolve</text>
+                <text x="610.4" y="58" fill="var(--plum)">Materialize</text>
+                <text x="796.6" y="58" fill="var(--fg-secondary)">Emit</text>
+              </g>
+              <g stroke-width="2">
+                <path d="M28 66H125.5" stroke="var(--gold)"/>
+                <path d="M127.3 66H199.9" stroke="var(--accent)"/>
+                <path d="M201.7 66H348.8" stroke="var(--green)"/>
+                <path d="M350.7 66H497.8" stroke="var(--blue)"/>
+                <path d="M499.6 66H721.1" stroke="var(--plum)"/>
+                <path d="M723 66H870.1" stroke="var(--fg-secondary)"/>
+              </g>
+
+              <g stroke="var(--diagram-bg)" stroke-width=".5">
+                <rect class="stg" data-i="0" tabindex="0" role="button" aria-label="1 · CompileProcedure" x="28" y="78" width="23" height="56" rx="2" fill="var(--gold)" fill-opacity=".55"/>
+                <rect class="stg" data-i="1" tabindex="0" role="button" aria-label="2 · BuildLayerGraph" x="52.8" y="78" width="23" height="56" rx="2" fill="var(--gold)" fill-opacity=".55"/>
+                <rect class="stg" data-i="2" tabindex="0" role="button" aria-label="3 · PreProcessControlFlowGraph" x="77.6" y="78" width="23" height="56" rx="2" fill="var(--gold)" fill-opacity=".55"/>
+                <rect class="stg" data-i="3" tabindex="0" role="button" aria-label="4 · ValidateControlFlowGraph" x="102.5" y="78" width="23" height="56" rx="2" fill="var(--gold)" fill-opacity=".55"/>
+                <rect class="stg" data-i="4" tabindex="0" role="button" aria-label="5 · OptimizeControlFlowGraph" x="127.3" y="78" width="23" height="56" rx="2" fill="var(--accent)" fill-opacity=".55"/>
+                <rect class="stg" data-i="5" tabindex="0" role="button" aria-label="6 · RunMirPrepareIr" x="152.1" y="78" width="23" height="56" rx="2" fill="var(--accent)" fill-opacity=".55"/>
+                <rect class="stg" data-i="6" tabindex="0" role="button" aria-label="7 · RunFindInherentParallelism" x="176.9" y="78" width="23" height="56" rx="2" fill="var(--accent)" fill-opacity=".55"/>
+                <rect class="stg" data-i="7" tabindex="0" role="button" aria-label="8 · RunMirBuilder" x="201.7" y="78" width="23" height="56" rx="2" fill="var(--green)" fill-opacity=".55"/>
+                <rect class="stg" data-i="8" tabindex="0" role="button" aria-label="9 · RunTaskScheduler" x="226.6" y="78" width="23" height="56" rx="2" fill="var(--green)" fill-opacity=".55"/>
+                <rect class="stg" data-i="9" tabindex="0" role="button" aria-label="10 · ValidateMirInfo" x="251.4" y="78" width="23" height="56" rx="2" fill="var(--green)" fill-opacity=".55"/>
+                <rect class="stg" data-i="10" tabindex="0" role="button" aria-label="11 · RunCPAllocator" x="276.2" y="78" width="23" height="56" rx="2" fill="var(--green)" fill-opacity=".55"/>
+                <rect class="stg" data-i="11" tabindex="0" role="button" aria-label="12 · MirPrepareControlFlow" x="301" y="78" width="23" height="56" rx="2" fill="var(--green)" fill-opacity=".55"/>
+                <rect class="stg" data-i="12" tabindex="0" role="button" aria-label="13 · ValidateMirInfo" x="325.8" y="78" width="23" height="56" rx="2" fill="var(--green)" fill-opacity=".55"/>
+                <rect class="stg" data-i="13" tabindex="0" role="button" aria-label="14 · RunRegisterSpilling" x="350.7" y="78" width="23" height="56" rx="2" fill="var(--blue)" fill-opacity=".55"/>
+                <rect class="stg" data-i="14" tabindex="0" role="button" aria-label="15 · RunMultiSegmentSpilling" x="375.5" y="78" width="23" height="56" rx="2" fill="var(--blue)" fill-opacity=".55"/>
+                <rect class="stg" data-i="15" tabindex="0" role="button" aria-label="16 · RunHazardAnalysis" x="400.3" y="78" width="23" height="56" rx="2" fill="var(--blue)" fill-opacity=".55"/>
+                <rect class="stg" data-i="16" tabindex="0" role="button" aria-label="17 · RunRemoteDependencyAnalysis" x="425.1" y="78" width="23" height="56" rx="2" fill="var(--blue)" fill-opacity=".55"/>
+                <rect class="stg" data-i="17" tabindex="0" role="button" aria-label="18 · RunPieceGeneration" x="449.9" y="78" width="23" height="56" rx="2" fill="var(--blue)" fill-opacity=".55"/>
+                <rect class="stg" data-i="18" tabindex="0" role="button" aria-label="19 · RunMemCacheAllocation" x="474.8" y="78" width="23" height="56" rx="2" fill="var(--blue)" fill-opacity=".55"/>
+                <rect class="stg" data-i="19" tabindex="0" role="button" aria-label="20 · UpdateFinalKernelSHA" x="499.6" y="78" width="23" height="56" rx="2" fill="var(--plum)" fill-opacity=".55"/>
+                <rect class="stg" data-i="20" tabindex="0" role="button" aria-label="21 · SetBinaryPoint" x="524.4" y="78" width="23" height="56" rx="2" fill="var(--plum)" fill-opacity=".55"/>
+                <rect class="stg" data-i="21" tabindex="0" role="button" aria-label="22 · SetSplitRowCompute" x="549.2" y="78" width="23" height="56" rx="2" fill="var(--plum)" fill-opacity=".55"/>
+                <rect class="stg" data-i="22" tabindex="0" role="button" aria-label="23 · DumpDebugProfilingInfo" x="574" y="78" width="23" height="56" rx="2" fill="var(--plum)" fill-opacity=".55"/>
+                <rect class="stg" data-i="23" tabindex="0" role="button" aria-label="24 · SetTDExecutionTime" x="598.9" y="78" width="23" height="56" rx="2" fill="var(--plum)" fill-opacity=".55"/>
+                <rect class="stg" data-i="24" tabindex="0" role="button" aria-label="25 · RunCachePrefetch" x="623.7" y="78" width="23" height="56" rx="2" fill="var(--plum)" fill-opacity=".55"/>
+                <rect class="stg" data-i="25" tabindex="0" role="button" aria-label="26 · RunContextSwitch" x="648.5" y="78" width="23" height="56" rx="2" fill="var(--plum)" fill-opacity=".55"/>
+                <rect class="stg" data-i="26" tabindex="0" role="button" aria-label="27 · RunKernelBufferControl" x="673.3" y="78" width="23" height="56" rx="2" fill="var(--plum)" fill-opacity=".55"/>
+                <rect class="stg" data-i="27" tabindex="0" role="button" aria-label="28 · RunComputeAddressTranslationRegisters" x="698.1" y="78" width="23" height="56" rx="2" fill="var(--plum)" fill-opacity=".55"/>
+                <rect class="stg" data-i="28" tabindex="0" role="button" aria-label="29 · BuildComputeProgram" x="723" y="78" width="23" height="56" rx="2" fill="var(--fg-secondary)" fill-opacity=".55"/>
+                <rect class="stg" data-i="29" tabindex="0" role="button" aria-label="30 · QualifyOnImbalanceRatio" x="747.8" y="78" width="23" height="56" rx="2" fill="var(--fg-secondary)" fill-opacity=".55"/>
+                <rect class="stg" data-i="30" tabindex="0" role="button" aria-label="31 · DumpLayerStats" x="772.6" y="78" width="23" height="56" rx="2" fill="var(--fg-secondary)" fill-opacity=".55"/>
+                <rect class="stg" data-i="31" tabindex="0" role="button" aria-label="32 · RunHandleMultiAneSynchronization" x="797.4" y="78" width="23" height="56" rx="2" fill="var(--fg-secondary)" fill-opacity=".55"/>
+                <rect class="stg" data-i="32" tabindex="0" role="button" aria-label="33 · RunCodeGenObjectGen" x="822.2" y="78" width="23" height="56" rx="2" fill="var(--fg-secondary)" fill-opacity=".55"/>
+                <rect class="stg" data-i="33" tabindex="0" role="button" aria-label="34 · SetLiveIOAttributes" x="847.1" y="78" width="23" height="56" rx="2" fill="var(--fg-secondary)" fill-opacity=".55"/>
+              </g>
+
+              <g font-size="12" fill="var(--fg-muted)" text-anchor="middle">
+                <text x="39.5" y="156">1</text>
+                <text x="138.8" y="156">5</text>
+                <text x="213.2" y="156">8</text>
+                <text x="362.2" y="156">14</text>
+                <text x="511.1" y="156">20</text>
+                <text x="734.5" y="156">29</text>
+                <text x="858.6" y="156">34</text>
+              </g>
+              <g font-size="11.5" fill="var(--fg-secondary)" text-anchor="middle">
+                <text x="76.8" y="184">parse · import</text>
+                <text x="163.6" y="202">Zin IR · MIR prepare</text>
+                <text x="275.3" y="184">MIR builder · scheduler · CP alloc</text>
+                <text x="424.3" y="202">spill · hazards · pieces · memcache</text>
+                <text x="610.4" y="184">late passes write descriptor state</text>
+                <text x="796.6" y="202">program · object · IO</text>
+              </g>
+              <text x="450" y="228" text-anchor="middle" font-size="11" fill="var(--fg-muted)">Auto-continuing breakpoints on every Zin controller · one 64-channel convolution · same order on repeated compiles</text>
+            </svg>
+          </div>
+                <div class="strip-detail" id="strip-detail" aria-live="polite">
+        <div class="sd-head"><span class="sd-num" id="sd-num"></span><code class="sd-name" id="sd-name"></code><span class="sd-phase" id="sd-phase"></span><span class="sd-role" id="sd-role"></span></div>
+        <p id="sd-copy"></p>
+      </div>
+      <figcaption>All 34 controller stages in firing order for one 64-channel convolution compile. The sequence was identical on repeated runs.</figcaption>
+        </figure>
+
+    <details>
+          <summary>Show the complete 34-function trace</summary>
+          <div class="inside">
+            <ol>
+              <li><code>CompileProcedure</code></li>
+              <li><code>BuildLayerGraph</code></li>
+              <li><code>PreProcessControlFlowGraph</code></li>
+              <li><code>ValidateControlFlowGraph</code></li>
+              <li><code>OptimizeControlFlowGraph</code></li>
+              <li><code>RunMirPrepareIr</code></li>
+              <li><code>RunFindInherentParallelism</code></li>
+              <li><code>RunMirBuilder</code></li>
+              <li><code>RunTaskScheduler</code></li>
+              <li><code>ValidateMirInfo</code></li>
+              <li><code>RunCPAllocator</code></li>
+              <li><code>MirPrepareControlFlow</code></li>
+              <li><code>ValidateMirInfo</code></li>
+              <li><code>RunRegisterSpilling</code></li>
+              <li><code>RunMultiSegmentSpilling</code></li>
+              <li><code>RunHazardAnalysis</code></li>
+              <li><code>RunRemoteDependencyAnalysis</code></li>
+              <li><code>RunPieceGeneration</code></li>
+              <li><code>RunMemCacheAllocation</code></li>
+              <li><code>UpdateFinalKernelSHA</code></li>
+              <li><code>SetBinaryPoint</code></li>
+              <li><code>SetSplitRowCompute</code></li>
+              <li><code>DumpDebugProfilingInfo</code></li>
+              <li><code>SetTDExecutionTime</code></li>
+              <li><code>RunCachePrefetch</code></li>
+              <li><code>RunContextSwitch</code></li>
+              <li><code>RunKernelBufferControl</code></li>
+              <li><code>RunComputeAddressTranslationRegisters</code></li>
+              <li><code>BuildComputeProgram</code></li>
+              <li><code>QualifyOnImbalanceRatio</code></li>
+              <li><code>DumpLayerStats</code></li>
+              <li><code>RunHandleMultiAneSynchronization</code></li>
+              <li><code>RunCodeGenObjectGen</code></li>
+              <li><code>SetLiveIOAttributes</code></li>
+            </ol>
+          </div>
+        </details>
+
+    <h3>The four levels of the pipeline</h3>
+
+    <div class="measure">
+      <p>Disassembly of those controllers shows the thirty-four stages falling into four levels, each more constrained than the last.</p>
+
+      <p><strong>Zin IR</strong> (stage 5) works on the graph's algebra: recognizing patterns like "subtract, square, reduce" as a variance calculation. <strong>MIR preparation</strong> (stages 6-7) lowers those recognized operations onto hardware engines and fuses compatible ones together. <strong>The MIR builder</strong> (stage 8) picks execution modes and forces the graph inside the machine's memory and latency limits. <strong>The backend</strong> (stages 9-34) schedules, allocates resources, and writes the actual register values and DMA commands into the binary.</p>
+
+      <p>This layering keeps graph-level decisions (should a matmul become a convolution?) separate from machine-level ones (which SRAM bank does a tile land in?). Sections 03 through 06 take the four levels in order.</p>
+    </div>
+
+    <figure class="complex">
+          <div class="figure-shell figure-scroll">
+            <svg viewBox="0 0 900 535" role="img" aria-label="Four-level optimization map. Zin IR recognizes and canonicalizes graph patterns. MIR preparation lowers, fuses, splits and chooses layouts. MIR builder selects engines and legalizes resources. The late backend schedules, allocates and emits task descriptors.">
+              <defs>
+                <marker id="map-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0L7 3.5L0 7Z" fill="var(--diagram-stroke)"/></marker>
+              </defs>
+              <rect width="900" height="535" fill="var(--diagram-bg)"/>
+              <text x="26" y="28" font-size="11" fill="var(--fg-muted)" letter-spacing="1.4">WHERE EACH DECISION IS MADE</text>
+
+              <g>
+                <rect x="28" y="48" width="844" height="96" rx="4" fill="var(--accent)" fill-opacity=".065" stroke="var(--accent)"/>
+                <rect x="28" y="48" width="150" height="96" rx="4" fill="var(--accent)" fill-opacity=".14"/>
+                <text x="48" y="75" font-size="13" font-weight="600" fill="var(--accent)">Zin IR</text>
+                <text x="48" y="95" font-size="10.5">recognize forms</text>
+                <text x="48" y="112" font-size="10.5">simplify graph</text>
+                <text x="48" y="129" font-size="10" fill="var(--fg-muted)">semantic level</text>
+                <text x="850" y="75" text-anchor="end" font-size="10" fill="var(--fg-muted)">stage 5</text>
+
+                <text x="202" y="72" font-size="11.5" font-weight="600">Fold and eliminate</text>
+                <text x="202" y="91" font-size="10.5" fill="var(--fg-secondary)">constants · identities · dead code · duplicate tensors</text>
+                <text x="202" y="116" font-size="11.5" font-weight="600">Recognize useful forms</text>
+                <text x="202" y="135" font-size="10.5" fill="var(--fg-secondary)">normalization · activations · reductions · matmul-as-conv</text>
+              </g>
+
+              <path d="M450 144V165" stroke="var(--diagram-stroke)" marker-end="url(#map-arrow)"/>
+
+              <g>
+                <rect x="28" y="168" width="844" height="96" rx="4" fill="var(--green)" fill-opacity=".065" stroke="var(--green)"/>
+                <rect x="28" y="168" width="150" height="96" rx="4" fill="var(--green)" fill-opacity=".14"/>
+                <text x="48" y="195" font-size="13" font-weight="600" fill="var(--green)">MIR prepare</text>
+                <text x="48" y="215" font-size="10.5">lower and fuse</text>
+                <text x="48" y="232" font-size="10.5">split tensors</text>
+                <text x="48" y="249" font-size="10" fill="var(--fg-muted)">hardware graph</text>
+                <text x="850" y="195" text-anchor="end" font-size="10" fill="var(--fg-muted)">stages 6–7 · §04</text>
+
+                <text x="202" y="192" font-size="11.5" font-weight="600">Reshape the work</text>
+                <text x="202" y="211" font-size="10.5" fill="var(--fg-secondary)">batch · channel · kernel · spatial splits · tensor caching</text>
+                <text x="202" y="236" font-size="11.5" font-weight="600">Join compatible work</text>
+                <text x="202" y="255" font-size="10.5" fill="var(--fg-secondary)">layer fusion · hoisting · transpose collapse · scale folding</text>
+              </g>
+
+              <path d="M450 264V285" stroke="var(--diagram-stroke)" marker-end="url(#map-arrow)"/>
+
+              <g>
+                <rect x="28" y="288" width="844" height="96" rx="4" fill="var(--blue)" fill-opacity=".065" stroke="var(--blue)"/>
+                <rect x="28" y="288" width="150" height="96" rx="4" fill="var(--blue)" fill-opacity=".14"/>
+                <text x="48" y="315" font-size="13" font-weight="600" fill="var(--blue)">MIR builder</text>
+                <text x="48" y="335" font-size="10.5">select modes</text>
+                <text x="48" y="352" font-size="10.5">legalize machine</text>
+                <text x="48" y="369" font-size="10" fill="var(--fg-muted)">resource level</text>
+                <text x="850" y="315" text-anchor="end" font-size="10" fill="var(--fg-muted)">stage 8 · §05</text>
+
+                <text x="202" y="312" font-size="11.5" font-weight="600">Select execution</text>
+                <text x="202" y="331" font-size="10.5" fill="var(--fg-secondary)">active NE · engine reassignment · double-int8 · large kernel</text>
+                <text x="202" y="356" font-size="11.5" font-weight="600">Satisfy constraints</text>
+                <text x="202" y="375" font-size="10.5" fill="var(--fg-secondary)">DRAM · L2 · latency · context switch · multi-segment</text>
+              </g>
+
+              <path d="M450 384V405" stroke="var(--diagram-stroke)" marker-end="url(#map-arrow)"/>
+
+              <g>
+                <rect x="28" y="408" width="844" height="96" rx="4" fill="var(--plum)" fill-opacity=".065" stroke="var(--plum)"/>
+                <rect x="28" y="408" width="150" height="96" rx="4" fill="var(--plum)" fill-opacity=".14"/>
+                <text x="48" y="435" font-size="13" font-weight="600" fill="var(--plum)">Late backend</text>
+                <text x="48" y="455" font-size="10.5">schedule and bind</text>
+                <text x="48" y="472" font-size="10.5">emit TD program</text>
+                <text x="48" y="489" font-size="10" fill="var(--fg-muted)">binary level</text>
+                <text x="850" y="435" text-anchor="end" font-size="10" fill="var(--fg-muted)">stages 9–34 · §06</text>
+
+                <text x="202" y="432" font-size="11.5" font-weight="600">Resolve pressure and order</text>
+                <text x="202" y="451" font-size="10.5" fill="var(--fg-secondary)">CP allocation · spilling · hazards · dependencies · cache allocation</text>
+                <text x="202" y="476" font-size="11.5" font-weight="600">Materialize hardware state</text>
+                <text x="202" y="495" font-size="10.5" fill="var(--fg-secondary)">prefetch · waits · address translation · register images · HWX</text>
+              </g>
+
+              <text x="450" y="526" text-anchor="middle" font-size="10" fill="var(--fg-muted)">Each level adds constraints the level above did not have.</text>
+            </svg>
+          </div>
+          <figcaption>Four optimization levels and the decisions each one makes. Each level adds constraints the one above did not have.</figcaption>
+        </figure>
+  </section>
+
+  <section class="chapter gold" id="zin-ir">
+    <h2 data-kicker="03 · Zin IR · stage 5">Zin IR: graph recognition and canonicalization</h2>
+
+    <div class="measure">
+      <p>The first level works on the graph's algebra. <code>ZinIrOptimize</code> runs dozens of ordered rewrites over the imported graph. Some simplify: pre-calculating constants, removing dead work, collapsing redundant broadcasts and transposes. Some recognize: detecting that a chain of subtract, square, and reduce is really a variance calculation, or that a sequence of elementwise operations is a known activation function. Some restructure: rewriting eligible matmuls as convolutions, folding quantize/dequantize pairs, and hoisting views around convolutions.</p>
+
+      <p>After this level, the graph is clean and named. A chain of elementary MIL operations has become one recognized form (a variance, a normalization, an activation) before any hardware planning starts. This level decides what the graph computes. The next two decide how.</p>
+    </div>
+
+    <details>
+          <summary>Show representative recovered pass names</summary>
+          <div class="inside">
+            <p><strong>Zin IR:</strong></p>
+            <ul>
+              <li><code>LowerBatchNorm</code>, <code>ConstInPrecalculation</code>, <code>ZinIrOptDCE</code></li>
+              <li><code>EWSquareDetection</code>, <code>VarianceCalculationDetection</code>, <code>NormalizationDetection</code></li>
+              <li><code>PerformReplaceMatmulWithConv</code>, <code>PerformTransposeMatmult</code></li>
+              <li><code>CollapseBroadcast</code>, <code>CollapseTranspose</code>, <code>CollapseQuantDequant</code></li>
+              <li><code>TensorPackingOptimizer</code>, <code>WidthConcatCanonicalizer</code>, <code>ReverseCSE</code></li>
+            </ul>
+            <p><strong>Zin MIR:</strong></p>
+            <ul>
+              <li><code>ZinMirLayerFusion::Run</code>, <code>ZinMirLayerHoisting::Execute</code></li>
+              <li><code>ZinMirSplitSpatially</code>, <code>ExecuteBondedSplitMode</code></li>
+              <li><code>ZinMirTensorDimensionLegalizer</code>, <code>ZinMirLatencyLegalizer</code>, <code>ZinMirL2Legalizer</code></li>
+              <li><code>ZinMirSetActiveNE</code>, <code>ZinMirOptimizeForDoubleInt8</code>, <code>ZinMirANEAssignment</code></li>
+            </ul>
+          </div>
+        </details>
+  </section>
+
+  <section class="chapter blue" id="fusion">
+    <h2 data-kicker="04 · MIR prepare · stages 6–7">Zin MIR preparation: lowering, splitting, and two fusion rounds</h2>
+
+    <div class="measure">
+      <p>MIR (machine IR) preparation takes the recognized graph and makes it runnable on hardware. This means splitting tensors that exceed machine limits (along batch, channel, kernel, or spatial dimensions), choosing memory layouts, hoisting compatible work together, and folding weights with their scales.</p>
+
+      <p>Interleaved with that work, the compiler runs fusion twice. Fusion is the process of combining separate graph operations into one hardware step. For example, a convolution followed by ReLU can execute as a single Task Descriptor instead of two, with no intermediate write to memory.</p>
+
+      <p>Why two rounds? Each sees a different graph. <code>ZinMirPrepareLayers</code> constructs two instances of <code>ZinMirLayerFusion</code>. The first (at offset <code>+2176</code>, mode byte clear) works on graph-level layers, before they are committed to specific hardware engines. The second (at <code>+3916</code>, mode byte set) runs after engine lowering and sees layers that are already bound to hardware.</p>
+
+      <p>Between the two rounds, several passes reshape the graph: channel-last conversion, GOC (general-operation-controller) engine reassignment, forward engine lowering, and wrap-axis validation. After the second round, dead-code elimination and post-fusion transpose hoisting clean up.</p>
+    </div>
+
+    <figure class="complex dense">
+          <div class="figure-shell figure-scroll">
+            <svg viewBox="0 0 900 610" role="img" aria-label="The two MIR fusion rounds and the passes between them. A broad graph fusion registry runs before channel layout and engine lowering. A narrow registry containing NEConv and TdBranching runs after engine lowering.">
+              <defs>
+                <marker id="round-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0L7 3.5L0 7Z" fill="var(--diagram-stroke)"/></marker>
+              </defs>
+              <rect width="900" height="610" fill="var(--diagram-bg)"/>
+              <text x="26" y="28" font-size="11" fill="var(--fg-muted)" letter-spacing="1.4">TWO FUSION ROUNDS INSIDE ZinMirPrepareLayers</text>
+
+              <g text-anchor="middle">
+                <rect x="28" y="54" width="154" height="76" rx="4" fill="var(--surface)" stroke="var(--gold)"/>
+                <text x="105" y="78" font-size="11.5" font-weight="600">Prepare graph</text>
+                <text x="105" y="98" font-size="10">hoisting · Q/DQ collapse</text>
+                <text x="105" y="115" font-size="10">CSE · transpose collapse</text>
+
+                <rect x="213" y="46" width="174" height="92" rx="4" fill="var(--blue)" fill-opacity=".12" stroke="var(--blue)" stroke-width="2"/>
+                <text x="300" y="72" font-size="12.5" font-weight="600" fill="var(--blue)">Broad fusion</text>
+                <text x="300" y="93" font-size="10.5">+2176 · mode 0</text>
+                <text x="300" y="112" font-size="10">graph-level NE · PE · SNE</text>
+
+                <rect x="412" y="54" width="208" height="76" rx="4" fill="var(--surface)" stroke="var(--green)"/>
+                <text x="516" y="78" font-size="11.5" font-weight="600">Machine preparation</text>
+                <text x="516" y="98" font-size="10">channel-last · GOC reassignment</text>
+                <text x="516" y="115" font-size="10">engine lowering · wrap validation</text>
+
+                <rect x="643" y="46" width="174" height="92" rx="4" fill="var(--accent)" fill-opacity=".12" stroke="var(--accent)" stroke-width="2"/>
+                <text x="730" y="72" font-size="12.5" font-weight="600" fill="var(--accent)">Narrow fusion</text>
+                <text x="730" y="93" font-size="10.5">+3916 · mode 1</text>
+                <text x="730" y="112" font-size="10">lowered engine patterns only</text>
+              </g>
+              <path d="M182 92H211" stroke="var(--diagram-stroke)" marker-end="url(#round-arrow)"/><path d="M387 92H410" stroke="var(--diagram-stroke)" marker-end="url(#round-arrow)"/><path d="M620 92H641" stroke="var(--diagram-stroke)" marker-end="url(#round-arrow)"/>
+              <text x="730" y="156" text-anchor="middle" font-size="10" fill="var(--fg-muted)">then DCE · post-fusion hoisting</text>
+
+              <rect x="28" y="174" width="542" height="374" rx="5" fill="var(--blue)" fill-opacity=".055" stroke="var(--blue)"/>
+              <text x="50" y="202" font-size="12.5" font-weight="600" fill="var(--blue)">Round 1 · broad graph registry</text>
+              <text x="50" y="221" font-size="10" fill="var(--fg-muted)">patterns constructed by the mode-0 registry</text>
+
+              <text x="50" y="258" font-size="10.5" font-weight="600" fill="var(--blue)">NE</text>
+              <text x="91" y="258" font-size="10.5">Conv · UConv · UPool · KernelRasterizer · CrossCorrelation</text>
+              <text x="91" y="277" font-size="10.5">MatMul · Pool · ElementWise · DualSourceElementWise</text>
+              <text x="91" y="296" font-size="10.5">Bypass · RCAS · NEConv · TdBranching</text>
+
+              <text x="50" y="331" font-size="10.5" font-weight="600" fill="var(--plum)">PE</text>
+              <text x="91" y="331" font-size="10.5">Pool · BinaryPool · ElementWiseAdd · ElementWise</text>
+              <text x="91" y="350" font-size="10.5">ElementWiseMirror · UnaryElementWise · GOC</text>
+              <text x="91" y="369" font-size="10.5">DeQuantVector · Dequant · QuantScalar · QuantVector</text>
+
+              <text x="50" y="404" font-size="10.5" font-weight="600" fill="var(--green)">SNE</text>
+              <text x="91" y="404" font-size="10.5">EWActCondition · ScaleBiasCondition · SNEScaleBias</text>
+
+              <rect x="50" y="438" width="236" height="80" rx="4" fill="var(--surface)" stroke="var(--green)"/>
+              <text x="68" y="462" font-size="11" font-weight="600" fill="var(--green)">Observed · attention</text>
+              <text x="68" y="482" font-size="10">MatMul ×2 · Bypass ×3</text>
+              <text x="68" y="499" font-size="10">Unary EW ×2 · ElementWise ×2</text>
+
+              <rect x="310" y="438" width="236" height="80" rx="4" fill="var(--surface)" stroke="var(--green)"/>
+              <text x="328" y="462" font-size="11" font-weight="600" fill="var(--green)">Observed · W8A8 chain</text>
+              <text x="328" y="482" font-size="10">Conv ×4 on the main path</text>
+              <text x="328" y="499" font-size="10">Q/DQ edges already collapsed</text>
+
+              <rect x="596" y="174" width="276" height="374" rx="5" fill="var(--accent)" fill-opacity=".055" stroke="var(--accent)"/>
+              <text x="618" y="202" font-size="12.5" font-weight="600" fill="var(--accent)">Round 2 · narrow registry</text>
+              <text x="618" y="221" font-size="10" fill="var(--fg-muted)">only two pattern constructors</text>
+
+              <rect x="618" y="246" width="232" height="112" rx="4" fill="var(--surface)" stroke="var(--accent)"/>
+              <text x="636" y="272" font-size="11.5" font-weight="600">NEConv</text>
+              <text x="636" y="294" font-size="10.5"><tspan font-weight="600">neconv</tspan> → <tspan font-weight="600">negoc</tspan></text>
+              <text x="636" y="316" font-size="10" fill="var(--fg-secondary)">lowered NEConv or NEBypass</text>
+              <text x="636" y="334" font-size="10" fill="var(--fg-secondary)">plus eligible GOC / activation</text>
+
+              <rect x="618" y="382" width="232" height="100" rx="4" fill="var(--surface)" stroke="var(--accent)"/>
+              <text x="636" y="408" font-size="11.5" font-weight="600">TdBranching</text>
+              <text x="636" y="430" font-size="10.5"><tspan font-weight="600">ane_layer</tspan> → <tspan font-weight="600">condition_layer</tspan></text>
+              <text x="636" y="452" font-size="10" fill="var(--fg-secondary)">attach a hardware condition</text>
+              <text x="636" y="470" font-size="10" fill="var(--fg-secondary)">to an engine task descriptor</text>
+
+              <text x="734" y="516" text-anchor="middle" font-size="10" fill="var(--fg-muted)">No ordinary tested graph committed here.</text>
+              <text x="450" y="586" text-anchor="middle" font-size="10" fill="var(--fg-muted)">Registry constructors show which patterns exist. Stack-filtered commits show which ones fired.</text>
+            </svg>
+          </div>
+          <figcaption>Two fusion rounds inside <code>ZinMirPrepareLayers</code>, the passes between them, and each round's pattern registry.</figcaption>
+        </figure>
+
+    <details>
+          <summary>Show the observed pass order around both fusion rounds</summary>
+          <div class="inside">
+            <ol>
+              <li><code>+1320</code> · <code>ZinMirLayerHoisting::Execute</code></li>
+              <li><code>+1368</code> · <code>CollapseQuantDequant</code></li>
+              <li><code>+1476</code> · <code>ScaledEWOrEWWithConstInToGOCFusion</code></li>
+              <li><code>+1524</code> · <code>CollapseTranspose</code></li>
+              <li><code>+1852</code> · <code>PreFusionCSE</code></li>
+              <li><code>+1928</code> · <code>ReverseCSE</code></li>
+              <li><code>+2160 / +2176</code> · construct mode-0 fusion, then run it</li>
+              <li><code>+2352</code> · <code>OptimizeToChannelLast</code></li>
+              <li><code>+2500</code> · <code>ZinMirGOCEngineReassignment::Execute</code></li>
+              <li><code>+2652</code> · remove 8-bit-to-fp16 copy</li>
+              <li><code>+2724 / +2756</code> · fully connected optimization, then CSE</li>
+              <li><code>+2904</code> · insert transpose for PE reduction</li>
+              <li><code>+3092 / +3140 / +3192</code> · SSM and reshape cleanup</li>
+              <li><code>+3328 / +3392 / +3472</code> · dilated-conv optimization, dynamic-conv lowering, matmul kernel padding</li>
+              <li><code>+3672</code> · forward engine lowering</li>
+              <li><code>+3736 / +3828</code> · <code>after_engine_lowering</code>, then wrap-axis validation</li>
+              <li><code>+3900 / +3916</code> · construct mode-1 fusion, then run it</li>
+              <li><code>+3924 / +4068 / +4220</code> · <code>after_fusion2</code>, DCE, post-fusion transpose hoisting</li>
+            </ol>
+          </div>
+        </details>
+
+    <h3>Pattern registries of the two rounds</h3>
+
+    <div class="measure">
+      <p>The broad round's registry covers the ANE's three engine types. NE (Neural Engine) handles convolutions and matmuls. PE (Planar Engine) handles elementwise and pooling work. SNE handles scale-and-bias operations. Each engine type has its own set of fusion patterns.</p>
+
+      <p>The narrow round registers only two patterns. <code>NEConv</code> looks for a lowered convolution (opcode <code>0x5d</code>, a <code>ZinNEConvLayer</code>) or bypass (opcode <code>0x64</code>, a <code>ZinNEBypassLayer</code>) whose boundary holds an eligible GOC or activation layer. If the predecessor is the captured convolution and the tensor formats and DMA symbols are compatible, it fuses them. <code>TdBranching</code> captures an <code>ane_layer</code> followed by a <code>condition_layer</code> and attaches a hardware condition to the task descriptor.</p>
+
+      <p>One methodological note: the framework runs the same fusion machinery during internal validation, so a raw breakpoint count overstates the main path. Every fusion count in this section is filtered to accept a commit only when the call stack contains <code>ZinMirPrepareLayers</code>.</p>
+    </div>
+
+    <h3>Convolution + ReLU fusion, traced on live objects</h3>
+
+    <div class="measure">
+      <p>Here is what fusion looks like on a live convolution followed by ReLU. The broad round's <code>ZinNEPatterns::Conv</code> pattern found two matches: the convolution layer (key <code>main</code>) and the ReLU layer (key <code>activation</code>). <code>Conv::Fuse</code> took both pointers and built a single <code>ZinNEConvLayer</code> that combines them. The commit callback then rewired the graph: it added the new fused object, redirected incoming edges, moved outgoing edges, and removed both original objects.</p>
+
+      <p>In the plain-convolution control (no ReLU), the activation match was null at both visits and nothing was fused.</p>
+    </div>
+
+    <figure class="complex">
+          <div class="figure-shell figure-scroll">
+            <svg viewBox="0 0 900 430" role="img" aria-label="Direct live-object trace of convolution and ReLU fusion. The MIR fusion pass matches separate convolution and activation objects, constructs one ZinNEConvLayer, adds it to the graph, redirects edges, and removes both input objects. A plain convolution control has no activation match.">
+              <defs>
+                <marker id="fusion-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0L7 3.5L0 7Z" fill="var(--diagram-stroke)"/></marker>
+              </defs>
+              <rect width="900" height="430" fill="var(--diagram-bg)"/>
+              <text x="26" y="29" font-size="11" fill="var(--fg-muted)" letter-spacing="1.4">ONE OBSERVED MIR GRAPH REWRITE</text>
+
+              <text x="115" y="62" text-anchor="middle" font-size="10.5" fill="var(--fg-muted)" letter-spacing="1">BEFORE</text>
+              <rect x="38" y="80" width="190" height="66" rx="4" fill="var(--surface)" stroke="var(--blue)"/>
+              <text x="133" y="105" text-anchor="middle" font-size="12.5" font-weight="600">Convolution object</text>
+              <text x="133" y="126" text-anchor="middle" font-size="10.5" fill="var(--fg-secondary)">match: main · pointer A</text>
+
+              <rect x="38" y="170" width="190" height="66" rx="4" fill="var(--surface)" stroke="var(--plum)"/>
+              <text x="133" y="195" text-anchor="middle" font-size="12.5" font-weight="600">Activation object</text>
+              <text x="133" y="216" text-anchor="middle" font-size="10.5" fill="var(--fg-secondary)">match: activation · ptr B</text>
+
+              <path d="M228 113H292" stroke="var(--diagram-stroke)" marker-end="url(#fusion-arrow)"/>
+              <path d="M228 203H292" stroke="var(--diagram-stroke)" marker-end="url(#fusion-arrow)"/>
+
+              <rect x="296" y="66" width="306" height="224" rx="5" fill="var(--accent)" fill-opacity=".08" stroke="var(--accent)"/>
+              <text x="449" y="92" text-anchor="middle" font-size="12.5" font-weight="600" fill="var(--accent)">ZinMirLayerFusion::Run</text>
+              <text x="449" y="112" text-anchor="middle" font-size="10" fill="var(--fg-muted)">ZinMirPrepareLayers +2176</text>
+
+              <rect x="324" y="132" width="250" height="38" rx="3" fill="var(--diagram-fill)" stroke="var(--border)"/>
+              <text x="449" y="156" text-anchor="middle" font-size="11">Group · find the pattern matches</text>
+              <path d="M449 170V188" stroke="var(--diagram-stroke)" marker-end="url(#fusion-arrow)"/>
+              <rect x="324" y="191" width="250" height="38" rx="3" fill="var(--diagram-fill)" stroke="var(--blue)"/>
+              <text x="449" y="215" text-anchor="middle" font-size="11">Conv::Fuse · build ZinNEConvLayer</text>
+              <path d="M449 229V247" stroke="var(--diagram-stroke)" marker-end="url(#fusion-arrow)"/>
+              <rect x="324" y="250" width="250" height="28" rx="3" fill="var(--diagram-fill)" stroke="var(--green)"/>
+              <text x="449" y="269" text-anchor="middle" font-size="10.5">Commit · rewrite the live graph</text>
+
+              <path d="M602 177H666" stroke="var(--diagram-stroke)" marker-end="url(#fusion-arrow)"/>
+              <text x="747" y="62" text-anchor="middle" font-size="10.5" fill="var(--fg-muted)" letter-spacing="1">AFTER</text>
+              <rect x="670" y="94" width="192" height="104" rx="4" fill="var(--green)" fill-opacity=".10" stroke="var(--green)"/>
+              <text x="766" y="121" text-anchor="middle" font-size="12.5" font-weight="600">One ZinNEConvLayer</text>
+              <text x="766" y="143" text-anchor="middle" font-size="10.5" fill="var(--fg-secondary)">new pointer C</text>
+              <text x="766" y="163" text-anchor="middle" font-size="10.5" fill="var(--fg-secondary)">convolution + activation</text>
+              <text x="766" y="183" text-anchor="middle" font-size="10.5" fill="var(--green)">added to graph</text>
+
+              <rect x="670" y="216" width="192" height="74" rx="4" fill="var(--surface)" stroke="var(--border)"/>
+              <text x="766" y="239" text-anchor="middle" font-size="10.5">redirect incoming edges</text>
+              <text x="766" y="257" text-anchor="middle" font-size="10.5">move outgoing edges</text>
+              <text x="766" y="275" text-anchor="middle" font-size="10.5">remove pointers A and B</text>
+
+              <rect x="38" y="326" width="824" height="66" rx="4" fill="var(--surface-2)" stroke="var(--border)"/>
+              <text x="58" y="351" font-size="11" font-weight="600" fill="var(--blue)">CONTROL</text>
+              <text x="142" y="351" font-size="10.5">plain convolution: main = non-null · activation = null at both visits</text>
+              <text x="58" y="375" font-size="11" font-weight="600" fill="var(--plum)">LATER PASS</text>
+              <text x="142" y="375" font-size="10.5">ZinMirPrepareLayers +3916 runs, but produces no second convolution fusion</text>
+
+              <text x="450" y="416" text-anchor="middle" font-size="10" fill="var(--fg-muted)">The pointer returned by Conv::Fuse is the pointer added by Commit; both matched input pointers are then removed.</text>
+            </svg>
+          </div>
+          <figcaption>Conv + ReLU fusion traced on live objects: pattern match, fused layer creation, graph rewrite, and source removal.</figcaption>
+        </figure>
+
+    <h3>Fusion commits on the attention probe</h3>
+
+    <div class="measure">
+      <p>The attention probe follows a standard attention pattern: Q, K, and V slices, layout transposes, a QK matmul, scalar scaling, softmax, a PV matmul, and an output transpose. A second version adds a residual connection. Both compile to valid H16G HWX.</p>
+
+      <p>The broad round committed nine rewrites on the main attention path: two <code>MatMul</code> (for QK and PV), three <code>Bypass</code> (for view and layout paths), two <code>UnaryElementWise</code> (for the softmax sequence), and two <code>ElementWise</code> (for scaling and graph elementwise work). The residual version added one more PE <code>ElementWise</code>.</p>
+
+      <p>The four-layer W8A8 chain committed four <code>Conv</code> rewrites. Its explicit quantize/dequantize edges were already gone by this point, because <code>CollapseQuantDequant</code> runs earlier at <code>+1368</code>, before the first fusion round.</p>
+    </div>
+
+    <figure class="complex dense">
+          <div class="figure-shell figure-scroll">
+            <svg viewBox="0 0 900 350" role="img" aria-label="Composed attention graph and the main-path fusion commits observed while compiling it. Q K and V paths feed QK matmul, scale, softmax, PV matmul and output transpose. The broad fusion round commits MatMul, Bypass, UnaryElementWise and ElementWise patterns.">
+              <defs>
+                <marker id="attention-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0L7 3.5L0 7Z" fill="var(--diagram-stroke)"/></marker>
+              </defs>
+              <rect width="900" height="350" fill="var(--diagram-bg)"/>
+              <text x="26" y="28" font-size="11" fill="var(--fg-muted)" letter-spacing="1.4">COMPOSED ATTENTION PROBE · SUCCESSFUL H16G COMPILE</text>
+
+              <g text-anchor="middle" font-size="10.5">
+                <rect x="28" y="66" width="106" height="50" rx="4" fill="var(--surface)" stroke="var(--blue)"/>
+                <text x="81" y="87" font-weight="600">Q / K / V</text><text x="81" y="103" font-size="10">slice views</text>
+
+                <rect x="147" y="66" width="106" height="50" rx="4" fill="var(--surface)" stroke="var(--plum)"/>
+                <text x="200" y="87" font-weight="600">Layout</text><text x="200" y="103" font-size="10">transposes</text>
+
+                <rect x="266" y="66" width="106" height="50" rx="4" fill="var(--surface)" stroke="var(--green)"/>
+                <text x="319" y="87" font-weight="600">QK</text><text x="319" y="103" font-size="10">matmul</text>
+
+                <rect x="385" y="66" width="106" height="50" rx="4" fill="var(--surface)" stroke="var(--gold)"/>
+                <text x="438" y="87" font-weight="600">Scale</text><text x="438" y="103" font-size="10">scalar multiply</text>
+
+                <rect x="504" y="66" width="106" height="50" rx="4" fill="var(--surface)" stroke="var(--accent)"/>
+                <text x="557" y="87" font-weight="600">Softmax</text><text x="557" y="103" font-size="10">PE sequence</text>
+
+                <rect x="623" y="66" width="106" height="50" rx="4" fill="var(--surface)" stroke="var(--green)"/>
+                <text x="676" y="87" font-weight="600">PV</text><text x="676" y="103" font-size="10">matmul</text>
+
+                <rect x="742" y="66" width="106" height="50" rx="4" fill="var(--surface)" stroke="var(--plum)"/>
+                <text x="795" y="87" font-weight="600">Output</text><text x="795" y="103" font-size="10">transpose</text>
+              </g>
+              <path d="M134 91H145" stroke="var(--diagram-stroke)" marker-end="url(#attention-arrow)"/><path d="M253 91H264" stroke="var(--diagram-stroke)" marker-end="url(#attention-arrow)"/><path d="M372 91H383" stroke="var(--diagram-stroke)" marker-end="url(#attention-arrow)"/><path d="M491 91H502" stroke="var(--diagram-stroke)" marker-end="url(#attention-arrow)"/><path d="M610 91H621" stroke="var(--diagram-stroke)" marker-end="url(#attention-arrow)"/><path d="M729 91H740" stroke="var(--diagram-stroke)" marker-end="url(#attention-arrow)"/>
+              <text x="450" y="142" text-anchor="middle" font-size="10" fill="var(--fg-muted)">A second version adds a residual connection after the output transpose.</text>
+
+              <path d="M450 150V166" stroke="var(--diagram-stroke)" marker-end="url(#attention-arrow)"/>
+
+              <rect x="28" y="170" width="844" height="132" rx="5" fill="var(--blue)" fill-opacity=".055" stroke="var(--blue)"/>
+              <text x="50" y="196" font-size="12" font-weight="600" fill="var(--blue)">Committed in the broad round</text>
+              <text x="850" y="196" text-anchor="end" font-size="10" fill="var(--fg-muted)">main compile stack only · nine commits</text>
+
+              <g text-anchor="middle">
+                <rect x="72" y="214" width="170" height="66" rx="4" fill="var(--green)" fill-opacity=".10" stroke="var(--green)"/>
+                <text x="157" y="240" font-size="12" font-weight="600">MatMul ×2</text>
+                <text x="157" y="260" font-size="10.5">QK and PV</text>
+
+                <rect x="262" y="214" width="170" height="66" rx="4" fill="var(--green)" fill-opacity=".10" stroke="var(--green)"/>
+                <text x="347" y="240" font-size="12" font-weight="600">Bypass ×3</text>
+                <text x="347" y="260" font-size="10.5">view / layout paths</text>
+
+                <rect x="452" y="214" width="180" height="66" rx="4" fill="var(--green)" fill-opacity=".10" stroke="var(--green)"/>
+                <text x="542" y="240" font-size="12" font-weight="600">Unary EW ×2</text>
+                <text x="542" y="260" font-size="10.5">softmax sequence</text>
+
+                <rect x="652" y="214" width="180" height="66" rx="4" fill="var(--green)" fill-opacity=".10" stroke="var(--green)"/>
+                <text x="742" y="240" font-size="12" font-weight="600">ElementWise ×2</text>
+                <text x="742" y="260" font-size="10.5">scale and graph EW</text>
+              </g>
+
+              <text x="450" y="330" text-anchor="middle" font-size="10" fill="var(--fg-muted)">Attention + residual repeats these commits and adds one PE ElementWise rewrite for the residual edge.</text>
+            </svg>
+          </div>
+          <figcaption>Nine fusion commits recorded on the attention probe's main path. All occurred in the broad round.</figcaption>
+        </figure>
+
+    <div class="table-wrap">
+          <table>
+            <thead><tr><th>Probe</th><th>Main broad-round commits</th><th>Narrow-round commit</th></tr></thead>
+            <tbody>
+              <tr><td>Conv + ReLU</td><td><code>Conv ×1</code>; one <code>ZinNEConvLayer</code> inserted</td><td>None</td></tr>
+              <tr><td>Attention</td><td><code>MatMul ×2</code>, <code>Bypass ×3</code>, <code>UnaryElementWise ×2</code>, <code>ElementWise ×2</code></td><td>None</td></tr>
+              <tr><td>Attention + residual</td><td>Attention commits plus <code>ElementWise ×1</code></td><td>None</td></tr>
+              <tr><td>Four-layer W8A8 conv chain</td><td><code>Conv ×4</code>; explicit Q/DQ edges absent before this round</td><td>None</td></tr>
+              <tr><td>Affine, fan-out, residual, double activation and layout probes</td><td>Pattern-dependent first-round rewrites</td><td>None</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+    <h3>Conditions of the narrow round</h3>
+
+    <div class="measure">
+      <p>None of the probes produced a commit in the second (narrow) round. This includes every graph we tested: plain and fused convolutions, branch, residual, affine, activation, and layout graphs, the attention block, and the W8A8 chain.</p>
+
+      <p>The registry explains why. <code>NEConv</code> needs a very specific setup: a lowered convolution or bypass whose boundary holds an eligible GOC or activation, in the right tensor format with compatible DMA symbols. <code>TdBranching</code> needs a condition layer that none of these MIL graphs produce.</p>
+
+      <p>One source of the pattern that <code>NEConv</code> looks for is <code>ZinMirGOCEngineReassignment</code>, which runs between the two rounds. It visits eligible PE elementwise work, checks for a single compatible predecessor with unused output scale/bias state, creates constant scale-and-bias GOC data, inserts a <code>ZinNEBypassLayer</code>, and rewires the graph. That inserted bypass is the kind of node the narrow round's <code>NEConv</code> pattern is designed to find.</p>
+    </div>
+
+    <h3>Effect of <code>--O0</code> and <code>--O1</code></h3>
+
+    <div class="measure">
+      <p>The compiler accepts <code>--O0</code> and <code>--O1</code> optimization flags. We compiled conv + ReLU under the default policy and under both levels. All three produced a 65,536-byte container with a 472-byte Task Descriptor stream.</p>
+
+      <p><code>--O0</code> and <code>--O1</code> were byte-identical. The default stream differed from them in 159 of 472 bytes. Hardware lowering and fusion of the conv/ReLU pair into one TD program stayed active at every level. The optimization level changes the register image (the specific values written into descriptors), but lowering and fusion happen regardless.</p>
+    </div>
+
+    <figure class="complex">
+          <div class="figure-shell figure-scroll">
+            <svg viewBox="0 0 900 350" role="img" aria-label="Comparison of default, O0 and O1 task descriptor streams for convolution plus ReLU. All streams are 472 bytes. O0 and O1 are identical. Default differs from O0 in 159 bytes while 313 bytes remain the same.">
+              <defs>
+                <pattern id="diff-hatch" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+                  <rect width="7" height="7" fill="var(--accent)" fill-opacity=".16"/>
+                  <line x1="0" y1="0" x2="0" y2="7" stroke="var(--accent)" stroke-width="2"/>
+                </pattern>
+              </defs>
+              <rect width="900" height="350" fill="var(--diagram-bg)"/>
+              <text x="28" y="30" font-size="11" fill="var(--fg-muted)" letter-spacing="1.4">CONV + RELU · __TEXT.__text</text>
+
+              <text x="28" y="77" font-size="12.5" font-weight="600">default</text>
+              <rect x="132" y="56" width="640" height="40" rx="3" fill="var(--blue)" fill-opacity=".23" stroke="var(--blue)"/>
+              <rect x="556" y="56" width="216" height="40" rx="0" fill="url(#diff-hatch)" stroke="var(--accent)"/>
+              <text x="344" y="81" text-anchor="middle" font-size="11">313 bytes match O0</text>
+              <rect x="606" y="66" width="116" height="20" rx="3" fill="var(--diagram-bg)" stroke="var(--accent)" stroke-width=".8"/>
+              <text x="664" y="80" text-anchor="middle" font-size="11" font-weight="600" fill="var(--accent)">159 bytes differ</text>
+              <text x="792" y="81" font-size="11" fill="var(--fg-muted)">472 B</text>
+
+              <text x="28" y="143" font-size="12.5" font-weight="600">--O0</text>
+              <rect x="132" y="122" width="640" height="40" rx="3" fill="var(--blue)" fill-opacity=".23" stroke="var(--blue)"/>
+              <text x="452" y="147" text-anchor="middle" font-size="11">one TD program · mandatory lowering retained</text>
+              <text x="792" y="147" font-size="11" fill="var(--fg-muted)">472 B</text>
+
+              <text x="28" y="209" font-size="12.5" font-weight="600">--O1</text>
+              <rect x="132" y="188" width="640" height="40" rx="3" fill="var(--blue)" fill-opacity=".23" stroke="var(--blue)"/>
+              <text x="452" y="213" text-anchor="middle" font-size="11">byte-identical to --O0</text>
+              <text x="792" y="213" font-size="11" fill="var(--fg-muted)">472 B</text>
+
+              <path d="M132 267H772" stroke="var(--border)"/>
+              <circle cx="148" cy="293" r="6" fill="var(--blue)"/>
+              <text x="163" y="297" font-size="10.5" fill="var(--fg-secondary)">same TD byte</text>
+              <rect x="303" y="287" width="12" height="12" fill="url(#diff-hatch)" stroke="var(--accent)"/>
+              <text x="324" y="297" font-size="10.5" fill="var(--fg-secondary)">changed under default policy</text>
+
+              <text x="450" y="329" text-anchor="middle" font-size="10" fill="var(--fg-muted)">313 of 472 bytes are identical across all three levels.</text>
+            </svg>
+          </div>
+          <figcaption>Task Descriptor byte comparison across three optimization levels for conv + ReLU.</figcaption>
+        </figure>
+  </section>
+
+  <section class="chapter plum" id="mir-builder">
+    <h2 data-kicker="05 · MIR builder · stage 8">MIR builder: engine assignment, execution modes, and double-int8 eligibility</h2>
+
+    <div class="measure">
+      <p>The MIR builder gives each lowered layer two things: an engine assignment and an execution mode. It then forces the graph inside the machine's limits by running a series of legalizers for DRAM, L2, latency, context switching, and multi-segment operation. Its output is a machine graph with enough detail for the backend to schedule.</p>
+
+      <p>The double-int8 pass handles the W8A8 execution mode. When both weights and activations are 8-bit integers, a qualifying convolution can process two int8 products per cycle instead of one fp16 product. <code>ZinMirOptimizeForDoubleInt8</code> runs after active-NE selection, traverses candidate layers, and calls <code>CanUseDoubleInt8Mode</code> on each convolution.</p>
+
+      <p>The eligibility check has two stages. First, <code>CanUseDoubleMacModeBasedOnFormats</code> checks that the activation and kernel elements are each at most one byte and that their numeric formats are compatible. Second, convolution-specific checks verify kernel state, source mode, half-work-unit mode, a vector-palettized exception, and output-channel-group size. If both pass, the result is stored in MIR state at offset <code>+0x4ff</code>. Later stages (legalization, scheduling, TD emission) read that stored value and write the mode and DMA words into the final HWX.</p>
+    </div>
+
+    <figure class="complex">
+          <div class="figure-shell figure-scroll">
+            <svg viewBox="0 0 900 590" role="img" aria-label="Decision tree for the ANE compiler double-int8 convolution mode. The pass visits an eligible engine convolution, validates MIR state, checks one-byte activation and kernel formats, checks compatible numeric classes and convolution constraints, then stores the result in MIR state before descriptor emission.">
+              <defs>
+                <marker id="w8-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0L7 3.5L0 7Z" fill="var(--diagram-stroke)"/></marker>
+              </defs>
+              <rect width="900" height="590" fill="var(--diagram-bg)"/>
+              <text x="26" y="28" font-size="11" fill="var(--fg-muted)" letter-spacing="1.4">ZinMirOptimizeForDoubleInt8 · CONVOLUTION ELIGIBILITY</text>
+
+              <rect x="285" y="50" width="330" height="54" rx="4" fill="var(--accent)" fill-opacity=".12" stroke="var(--accent)"/>
+              <text x="450" y="73" text-anchor="middle" font-size="12.5" font-weight="600">Visit MIR layer</text>
+              <text x="450" y="91" text-anchor="middle" font-size="10" fill="var(--fg-secondary)">forward traversal of the control-flow graph</text>
+
+              <path d="M450 104V132" stroke="var(--diagram-stroke)" marker-end="url(#w8-arrow)"/>
+
+              <polygon points="450,134 650,180 450,226 250,180" fill="var(--surface)" stroke="var(--blue)"/>
+              <text x="450" y="176" text-anchor="middle" font-size="11.5" font-weight="600">engine convolution with MIR state?</text>
+              <text x="450" y="193" text-anchor="middle" font-size="10" fill="var(--fg-muted)">layer kind · attached conv · mode flags</text>
+
+              <path d="M250 180H177" stroke="var(--diagram-stroke)" marker-end="url(#w8-arrow)"/>
+              <text x="212" y="170" text-anchor="middle" font-size="10" fill="var(--fg-muted)">no</text>
+              <rect x="42" y="155" width="132" height="50" rx="4" fill="var(--surface)" stroke="var(--border)"/>
+              <text x="108" y="177" text-anchor="middle" font-size="11">leave mode off</text>
+              <text x="108" y="193" text-anchor="middle" font-size="10" fill="var(--fg-muted)">continue traversal</text>
+
+              <path d="M450 226V254" stroke="var(--diagram-stroke)" marker-end="url(#w8-arrow)"/>
+              <text x="462" y="245" font-size="10" fill="var(--green)">yes</text>
+
+              <rect x="230" y="256" width="440" height="76" rx="4" fill="var(--green)" fill-opacity=".08" stroke="var(--green)"/>
+              <text x="450" y="279" text-anchor="middle" font-size="12" font-weight="600">CanUseDoubleMacModeBasedOnFormats</text>
+              <text x="450" y="300" text-anchor="middle" font-size="10.5">primary activation format · activation size ≤ 1 B</text>
+              <text x="450" y="318" text-anchor="middle" font-size="10.5">kernel underlying size ≤ 1 B · compatible numeric class</text>
+
+              <path d="M230 294H176" stroke="var(--diagram-stroke)" marker-end="url(#w8-arrow)"/>
+              <text x="202" y="283" text-anchor="middle" font-size="10" fill="var(--fg-muted)">fail</text>
+              <path d="M108 205V256" stroke="var(--border)"/>
+              <rect x="42" y="258" width="132" height="50" rx="4" fill="var(--surface)" stroke="var(--border)"/>
+              <text x="108" y="280" text-anchor="middle" font-size="11">leave mode off</text>
+              <text x="108" y="296" text-anchor="middle" font-size="10" fill="var(--fg-muted)">format rejected</text>
+
+              <path d="M450 332V360" stroke="var(--diagram-stroke)" marker-end="url(#w8-arrow)"/>
+              <text x="462" y="351" font-size="10" fill="var(--green)">pass</text>
+
+              <rect x="230" y="362" width="440" height="92" rx="4" fill="var(--blue)" fill-opacity=".08" stroke="var(--blue)"/>
+              <text x="450" y="385" text-anchor="middle" font-size="12" font-weight="600">Convolution constraints</text>
+              <text x="450" y="406" text-anchor="middle" font-size="10.5">non-unity kernel weight · source and half-work-unit state</text>
+              <text x="450" y="424" text-anchor="middle" font-size="10.5">vector-palettized exception · channel assignment</text>
+              <text x="450" y="442" text-anchor="middle" font-size="10.5">calculated output-channel-group size</text>
+
+              <path d="M230 407H176" stroke="var(--diagram-stroke)" marker-end="url(#w8-arrow)"/>
+              <text x="202" y="396" text-anchor="middle" font-size="10" fill="var(--fg-muted)">fail</text>
+              <rect x="42" y="382" width="132" height="50" rx="4" fill="var(--surface)" stroke="var(--border)"/>
+              <text x="108" y="404" text-anchor="middle" font-size="11">leave mode off</text>
+              <text x="108" y="420" text-anchor="middle" font-size="10" fill="var(--fg-muted)">geometry rejected</text>
+
+              <path d="M450 454V482" stroke="var(--diagram-stroke)" marker-end="url(#w8-arrow)"/>
+              <text x="462" y="473" font-size="10" fill="var(--green)">pass</text>
+
+              <rect x="190" y="484" width="520" height="62" rx="4" fill="var(--accent)" fill-opacity=".14" stroke="var(--accent)"/>
+              <text x="450" y="509" text-anchor="middle" font-size="12.5" font-weight="600">Store double-int8 decision in MIR state</text>
+              <text x="450" y="529" text-anchor="middle" font-size="10.5" fill="var(--fg-secondary)">layer MIR info +0x4ff → legalization, scheduling, TD emission</text>
+
+              <text x="450" y="574" text-anchor="middle" font-size="10" fill="var(--fg-muted)">Checks run in this order. The first failure leaves the mode off.</text>
+            </svg>
+          </div>
+          <figcaption>Double-int8 eligibility checks for one convolution. The first failure leaves the mode off.</figcaption>
+        </figure>
+  </section>
+
+  <section class="chapter green" id="backend">
+    <h2 data-kicker="06 · Machine backend · stages 9–34">Machine backend: scheduling, allocation, and object generation</h2>
+
+    <div class="measure">
+      <p>Once every layer has an engine and a mode, the backend turns the plan into a program: a sequence of register writes and DMA commands. Order matters here. A prefetch address cannot be written until the schedule is known. A wait cannot be placed until hazard analysis has found the dependency it protects.</p>
+
+      <p>The trace shows the backend working in three phases. First, it resolves scheduling and resources: the task scheduler (stage 9) fixes the execution order, the constrained-programming allocator (stage 11) assigns resources to live ranges, and spilling (stages 14-15) handles what does not fit. This allocation stage is where the two-branch graph pulled in libORTools.</p>
+
+      <p>Next come the correctness passes: hazard analysis (stage 16) derives which tasks must wait for others, remote-dependency analysis (stage 17) handles cross-unit ordering, piece generation (stage 18) cuts the scheduled work into fragments, and memory-cache allocation (stage 19) assigns cache resources.</p>
+
+      <p>Finally, stages 20 through 28 write the hardware state that Part 4 found in the descriptors: kernel identity, binary point, split-row compute, timing estimates, cache prefetch, context-switch behavior, kernel-buffer control, and address-translation registers. <code>BuildComputeProgram</code> (stage 29) assembles the register-write stream, <code>RunCodeGenObjectGen</code> (stage 33) writes the <code>0xBEEFFACE</code> Mach-O, and <code>SetLiveIOAttributes</code> (stage 34) reports the live input and output layout.</p>
+
+      <p>Each backend pass produces a separate family of fields in the HWX, which is why the Task Descriptor stream contains distinct register-image records, DMA commands, explicit waits, streamed pieces, cache controls, and translation fields.</p>
+    </div>
+
+    <figure class="complex">
+          <div class="figure-shell figure-scroll">
+            <svg viewBox="0 0 900 420" role="img" aria-label="Late backend flow from machine graph through task scheduling, CP allocation, spilling, hazard analysis, dependency analysis, piece generation, memory cache allocation, register materialization, and HWX object generation.">
+              <defs>
+                <marker id="late-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0L7 3.5L0 7Z" fill="var(--diagram-stroke)"/></marker>
+              </defs>
+              <rect width="900" height="420" fill="var(--diagram-bg)"/>
+              <text x="26" y="28" font-size="11" fill="var(--fg-muted)" letter-spacing="1.4">FROM MACHINE GRAPH TO TASK DESCRIPTORS</text>
+
+              <g text-anchor="middle">
+                <g class="hov" tabindex="0" data-stages="" data-title="MIR graph handed to the backend"><rect class="frame" x="34" y="62" width="146" height="62" rx="4" fill="var(--diagram-fill)" stroke="var(--green)"/>
+                <text x="107" y="87" font-size="12" font-weight="600">MIR graph</text>
+                <text x="107" y="105" font-size="10" fill="var(--fg-secondary)">engines · splits · modes</text></g>
+
+                <g class="hov" tabindex="0" data-stages="9" data-title="Task scheduler"><rect class="frame" x="218" y="62" width="146" height="62" rx="4" fill="var(--diagram-fill)" stroke="var(--blue)"/>
+                <text x="291" y="87" font-size="12" font-weight="600">Task scheduler</text>
+                <text x="291" y="105" font-size="10" fill="var(--fg-secondary)">partitions · stage 9</text></g>
+
+                <g class="hov" tabindex="0" data-stages="10-13" data-title="CP allocator"><rect class="frame" x="402" y="62" width="146" height="62" rx="4" fill="var(--diagram-fill)" stroke="var(--gold)"/>
+                <text x="475" y="87" font-size="12" font-weight="600">CP allocator</text>
+                <text x="475" y="105" font-size="10" fill="var(--fg-secondary)">live ranges · 11–13</text></g>
+
+                <g class="hov" tabindex="0" data-stages="14-15" data-title="Spilling"><rect class="frame" x="586" y="62" width="146" height="62" rx="4" fill="var(--diagram-fill)" stroke="var(--plum)"/>
+                <text x="659" y="87" font-size="12" font-weight="600">Spilling</text>
+                <text x="659" y="105" font-size="10" fill="var(--fg-secondary)">reg · segment · 14–15</text></g>
+              </g>
+              <path d="M180 93H216" stroke="var(--diagram-stroke)" marker-end="url(#late-arrow)"/><path d="M364 93H400" stroke="var(--diagram-stroke)" marker-end="url(#late-arrow)"/><path d="M548 93H584" stroke="var(--diagram-stroke)" marker-end="url(#late-arrow)"/>
+
+              <path d="M659 124V159H107V182" fill="none" stroke="var(--diagram-stroke)" marker-end="url(#late-arrow)"/>
+
+              <g text-anchor="middle">
+                <g class="hov" tabindex="0" data-stages="16" data-title="Hazards"><rect class="frame" x="34" y="184" width="146" height="62" rx="4" fill="var(--diagram-fill)" stroke="var(--accent)"/>
+                <text x="107" y="209" font-size="12" font-weight="600">Hazards</text>
+                <text x="107" y="227" font-size="10" fill="var(--fg-secondary)">wait conditions · 16</text></g>
+
+                <g class="hov" tabindex="0" data-stages="17" data-title="Dependencies"><rect class="frame" x="218" y="184" width="146" height="62" rx="4" fill="var(--diagram-fill)" stroke="var(--accent)"/>
+                <text x="291" y="209" font-size="12" font-weight="600">Dependencies</text>
+                <text x="291" y="227" font-size="10" fill="var(--fg-secondary)">remote ordering · 17</text></g>
+
+                <g class="hov" tabindex="0" data-stages="18" data-title="Pieces"><rect class="frame" x="402" y="184" width="146" height="62" rx="4" fill="var(--diagram-fill)" stroke="var(--green)"/>
+                <text x="475" y="209" font-size="12" font-weight="600">Pieces</text>
+                <text x="475" y="227" font-size="10" fill="var(--fg-secondary)">fragments · stage 18</text></g>
+
+                <g class="hov" tabindex="0" data-stages="19" data-title="Memory cache"><rect class="frame" x="586" y="184" width="146" height="62" rx="4" fill="var(--diagram-fill)" stroke="var(--blue)"/>
+                <text x="659" y="209" font-size="12" font-weight="600">Memory cache</text>
+                <text x="659" y="227" font-size="10" fill="var(--fg-secondary)">allocation · stage 19</text></g>
+              </g>
+              <path d="M180 215H216" stroke="var(--diagram-stroke)" marker-end="url(#late-arrow)"/><path d="M364 215H400" stroke="var(--diagram-stroke)" marker-end="url(#late-arrow)"/><path d="M548 215H584" stroke="var(--diagram-stroke)" marker-end="url(#late-arrow)"/>
+
+              <path d="M659 246V281H215V302" fill="none" stroke="var(--diagram-stroke)" marker-end="url(#late-arrow)"/>
+
+              <g class="hov" tabindex="0" data-stages="20-28" data-title="Materialize machine state"><rect class="frame" x="116" y="304" width="256" height="70" rx="4" fill="var(--surface)" stroke="var(--gold)"/>
+              <text x="244" y="329" text-anchor="middle" font-size="12" font-weight="600">Materialize machine state</text>
+              <text x="244" y="348" text-anchor="middle" font-size="10" fill="var(--fg-secondary)">stages 20–28 · binary point · split row</text></g>
+              <text x="244" y="363" text-anchor="middle" font-size="10" fill="var(--fg-secondary)">timing · prefetch · address translation</text>
+
+              <path d="M372 339H449" stroke="var(--diagram-stroke)" marker-end="url(#late-arrow)"/>
+
+              <g class="hov" tabindex="0" data-stages="29-34" data-title="BuildComputeProgram → HWX"><rect class="frame" x="452" y="304" width="298" height="70" rx="4" fill="var(--accent)" fill-opacity=".12" stroke="var(--accent)"/>
+              <text x="601" y="329" text-anchor="middle" font-size="12" font-weight="600">BuildComputeProgram → HWX</text>
+              <text x="601" y="348" text-anchor="middle" font-size="10" fill="var(--fg-secondary)">register writes · DMA · waits · kernel data</text></g>
+              <text x="601" y="363" text-anchor="middle" font-size="10" fill="var(--fg-secondary)">live IO · object sections · stages 29–34</text>
+
+              <text x="450" y="404" text-anchor="middle" font-size="10" fill="var(--fg-muted)">The live trace established this controller order on the 64-channel convolution.</text>
+            </svg>
+          </div>
+          <div class="stage-detail" id="backend-detail" aria-live="polite">
+            <div class="sd-head"><span class="sd-title" id="bd-title">Hover a box to see the controller functions behind it</span><span class="sd-range" id="bd-range"></span></div>
+            <div class="sd-fns" id="bd-fns"></div>
+            <p id="bd-copy">Each box groups the trace stages named inside it. Ranges list every controller that fired in that span, in order.</p>
+          </div>
+          <figcaption>Backend pass order from machine graph to HWX object, as observed in the live trace.</figcaption>
+        </figure>
+  </section>
+
+  <section class="chapter gold" id="intermediates">
+    <h2 data-kicker="07 · Debug surfaces">Compiler options and retained debug output</h2>
+
+    <div class="measure">
+      <p>The exported function <code>ANECCreateCompilerOptionsCFString</code> converts a Core Foundation dictionary into the compiler's command-line form. It gave us a controlled way to turn on debugging, request status and partition dumps, and select optimization levels.</p>
+    </div>
+
+    <div class="table-wrap">
+          <table>
+            <thead><tr><th>Dictionary key</th><th>Generated compiler option</th><th>Observed result</th></tr></thead>
+            <tbody>
+              <tr><td><code>TargetArchitecture = H16G</code></td><td><code>-t H16G</code></td><td>Explicit M4 target</td></tr>
+              <tr><td><code>CompileANEProgramForDebugging</code></td><td><code>--debug</code></td><td>Larger debug HWX and debug logging</td></tr>
+              <tr><td><code>DebugMask = 0xffffffff</code></td><td><code>--debug_mask=0xffffffff</code></td><td>Reaches gated checkpoints; graph writer is stubbed</td></tr>
+              <tr><td><code>DumpStatusDictionaryToFile</code></td><td><code>--fdump-status-dictionary-to-file</code></td><td>Retained status plist</td></tr>
+              <tr><td><code>DumpParallelScore</code></td><td><code>--dump-parallel-score=true</code></td><td>Retained partition JSON</td></tr>
+              <tr><td><code>DisableOptimizations</code></td><td><code>--O0</code></td><td>Changed fused TD register image</td></tr>
+              <tr><td><code>OptLvlOne</code></td><td><code>--O1</code></td><td>Matched O0 for the probe</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+    <div class="measure">
+      <p>A debug compile retains three kinds of output. The status plist records the compiled input, the maximum DRAM usage (1,073,624 bytes for the probe), the procedure name, and every live tensor's dimensions, type, interleave, and strides. The two partition files (<code>init.json</code> and <code>refine.json</code>) report graph structure and partition scores: for the probe, a three-node graph, three-way partition, edge cut 2, and parallel score 0.</p>
+
+      <p>Graph dumps are a different story. The release framework reaches its named checkpoints (<code>before_fusion</code>, <code>after_fusion</code>, <code>after_engine_lowering</code>, <code>after_fusion2</code>, <code>after_mir_opt</code>, <code>after_reg_spill</code>) and assembles the expected filenames. But both writers are compiled out. <code>ZinIrOpLayerGraph::DebugPrint</code> creates an empty stream and returns it without reading the graph. The JSON writer is a single <code>ret</code> instruction. No option can recover text that these functions do not generate.</p>
+
+      <p>This is why the fusion evidence in section 04 comes from live LLDB object tracing rather than dump files. The pattern matches supply the input pointers, <code>Conv::Fuse</code> supplies the new layer, and the commit methods show it inserted while the sources are removed.</p>
+    </div>
+
+    <figure class="complex">
+          <div class="figure-shell figure-scroll">
+            <svg viewBox="0 0 900 424" role="img" aria-label="Observed compiler debug surfaces. Status and partition files are retained. DOT and JSON graph checkpoints execute, but their release-build writers are stubs. Live LLDB object tracing still captures matched layers, fused objects, graph insertion, edge movement, and source-node removal.">
+              <defs>
+                <marker id="dump-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0L7 3.5L0 7Z" fill="var(--diagram-stroke)"/></marker>
+              </defs>
+              <rect width="900" height="424" fill="var(--diagram-bg)"/>
+              <text x="26" y="28" font-size="11" fill="var(--fg-muted)" letter-spacing="1.4">WHAT THE DEBUG SURFACE ACTUALLY RETURNS</text>
+
+              <rect x="38" y="52" width="216" height="120" rx="4" fill="var(--surface)" stroke="var(--gold)"/>
+              <text x="56" y="78" font-size="12.5" font-weight="600" fill="var(--gold)">Compiler options</text>
+              <text x="56" y="102" font-size="10.5">--debug</text>
+              <text x="56" y="121" font-size="10.5">--debug_mask=0xffffffff</text>
+              <text x="56" y="140" font-size="10.5">--dump-parallel-score=true</text>
+              <text x="56" y="159" font-size="10.5">status dictionary dump</text>
+
+              <path d="M254 112H290" stroke="var(--diagram-stroke)" marker-end="url(#dump-arrow)"/>
+              <rect x="294" y="52" width="264" height="120" rx="4" fill="var(--accent)" fill-opacity=".09" stroke="var(--accent)"/>
+              <text x="426" y="81" text-anchor="middle" font-size="13" font-weight="600">ANECompiler</text>
+              <text x="426" y="106" text-anchor="middle" font-size="10.5">named graph checkpoints</text>
+              <text x="426" y="125" text-anchor="middle" font-size="10.5">partitioning · fusion · allocation</text>
+              <text x="426" y="144" text-anchor="middle" font-size="10.5">scheduler · object metadata</text>
+
+              <path d="M558 112H594" stroke="var(--green)" marker-end="url(#dump-arrow)"/>
+              <rect x="598" y="52" width="264" height="120" rx="4" fill="var(--green)" fill-opacity=".08" stroke="var(--green)"/>
+              <text x="616" y="78" font-size="12.5" font-weight="600" fill="var(--green)">Retained outputs</text>
+              <text x="616" y="102" font-size="10.5">status plist · tensors and max DRAM</text>
+              <text x="616" y="121" font-size="10.5">init.json · initial partition score</text>
+              <text x="616" y="140" font-size="10.5">refine.json · refined partition score</text>
+              <text x="616" y="159" font-size="10.5">debug HWX · compiled machine program</text>
+
+              <rect x="38" y="210" width="824" height="194" rx="4" fill="var(--surface-2)" stroke="var(--border)"/>
+              <text x="58" y="236" font-size="12.5" font-weight="600" fill="var(--blue)">Graph inspection paths</text>
+
+              <rect x="58" y="258" width="228" height="112" rx="4" fill="var(--diagram-fill)" stroke="var(--accent)"/>
+              <text x="172" y="282" text-anchor="middle" font-size="11.5" font-weight="600">DOT logging path</text>
+              <text x="172" y="304" text-anchor="middle" font-size="10">checkpoint is reached</text>
+              <text x="172" y="323" text-anchor="middle" font-size="10">DebugPrint ignores the graph</text>
+              <text x="172" y="342" text-anchor="middle" font-size="10">returns an empty string</text>
+              <text x="172" y="360" text-anchor="middle" font-size="10" fill="var(--accent)">release-build stub</text>
+
+              <rect x="336" y="258" width="228" height="112" rx="4" fill="var(--diagram-fill)" stroke="var(--accent)"/>
+              <text x="450" y="282" text-anchor="middle" font-size="11.5" font-weight="600">JSON file path</text>
+              <text x="450" y="304" text-anchor="middle" font-size="10">two constructors are reached</text>
+              <text x="450" y="323" text-anchor="middle" font-size="10">filenames are assembled</text>
+              <text x="450" y="342" text-anchor="middle" font-size="10">writer is one ret instruction</text>
+              <text x="450" y="360" text-anchor="middle" font-size="10" fill="var(--accent)">release-build stub</text>
+
+              <rect x="614" y="258" width="228" height="112" rx="4" fill="var(--green)" fill-opacity=".09" stroke="var(--green)"/>
+              <text x="728" y="282" text-anchor="middle" font-size="11.5" font-weight="600">Live object trace</text>
+              <text x="728" y="304" text-anchor="middle" font-size="10">matched layer pointers</text>
+              <text x="728" y="323" text-anchor="middle" font-size="10">new fused engine layer</text>
+              <text x="728" y="342" text-anchor="middle" font-size="10">AddNode · edge moves · RemoveNode</text>
+              <text x="728" y="360" text-anchor="middle" font-size="10" fill="var(--green)">working pass-level receipt</text>
+
+              <text x="450" y="391" text-anchor="middle" font-size="10" fill="var(--fg-muted)">Checkpoints and filenames are reached. Both graph writers are stubs. Live object traversal works.</text>
+            </svg>
+          </div>
+          <figcaption>Three debug output paths: status and partition files work, graph writers are stubs, live object tracing fills the gap.</figcaption>
+        </figure>
+  </section>
+
+  <section class="chapter" id="model">
+    <h2 data-kicker="08 · End to end">One convolution, end to end</h2>
+
+    <div class="measure">
+      <p>Follow the 64-channel convolution from the top of the map. <code>ANECCompile</code> hands its MIL text to <code>MIL.framework</code>, which parses it and passes the result to <code>BuildLayerGraph</code>.</p>
+
+      <p>Zin IR folds constants and removes dead work. On this simple graph there is nothing further to recognize. MIR preparation runs the broad fusion round, and because a ReLU is present, this is where the convolution and activation become one <code>ZinNEConvLayer</code>. The layer is lowered onto the NE. The narrow round runs but finds nothing to do.</p>
+
+      <p>The MIR builder selects the active engines and evaluates double-int8 eligibility. This is an fp16 graph, so the double-int8 mode stays off. The DRAM, L2, and latency legalizers check the graph against machine limits.</p>
+
+      <p>The backend schedules the single layer, allocates its resources on the internal solver, and finds no spills or hazards. It generates pieces, assigns the memory cache, writes prefetch and context-switch and address-translation state, builds the compute program, and emits a 65,536-byte HWX. Part 4 read its 472-byte Task Descriptor stream field by field.</p>
+
+      <p>A single hardware feature (W8A8, split-row execution, cache prefetch, or tensor streaming) depends on decisions spread across several of these stages. Part 4 showed that a chosen machine state can be reproduced by editing HWX directly. The compiler also has to decide when that state is legal and how it fits with the rest of the schedule.</p>
+    </div>
+  </section>
+
+  <section class="chapter blue" id="research-compiler">
+    <h2 data-kicker="09 · Research compiler">The research compiler and its M4 results</h2>
+
+    <div class="measure">
+      <p>We built a separate compiler in Objective-C and Objective-C++ from the recovered pipeline. It reads textual MIL, builds typed SSA and operation graphs, and runs graph passes that normalize and decompose operations. A fusion pass joins adjacent operations when their dependencies and measured task forms allow them to share one HWX program.</p>
+
+      <p>The planner creates legal H16G tasks using capability tables derived from measurements on one M4 and one macOS build. When compatible adjacent tasks can share one HWX program, they do. Otherwise they remain separate programs connected by IOSurfaces described in a binding manifest. Unsupported operations, shapes, data types, and reduction axes are rejected before object emission.</p>
+
+      <p>The object writer generates HWX files from scratch: Mach-O headers, sections, symbols, relocations, program records, tensor records, and payloads, all built from compiler data structures. It does not read or patch an Apple-compiled HWX container.</p>
+    </div>
+
+    <figure class="complex dense">
+      <div class="figure-shell figure-scroll">
+        <svg viewBox="0 0 900 690" role="img" aria-label="Research compiler from textual MIL to M4 execution, with the S128 by D128 FP16 attention graph shown as three HWX programs. Matmul and scale share the first program. Six normalization operations share the second through SRAM task forms. The final matmul occupies the third. IOSurfaces connect the three programs before execution on the M4 ANE.">
+          <defs>
+            <marker id="compiler-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0L7 3.5L0 7Z" fill="var(--diagram-stroke)"/></marker>
+            <marker id="compiler-green-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0L7 3.5L0 7Z" fill="var(--green)"/></marker>
+            <marker id="compiler-blue-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0L7 3.5L0 7Z" fill="var(--blue)"/></marker>
+          </defs>
+          <rect width="900" height="690" fill="var(--diagram-bg)"/>
+          <text x="28" y="30" font-size="12.5" fill="var(--fg-muted)" letter-spacing="1.2">RESEARCH COMPILER · GRAPH TO PROGRAMS TO M4</text>
+
+          <g fill="var(--diagram-fill)" stroke="var(--diagram-stroke)">
+            <rect x="28" y="52" width="160" height="80" rx="4"/>
+            <rect x="214" y="52" width="176" height="80" rx="4"/>
+            <rect x="416" y="52" width="208" height="80" rx="4"/>
+            <rect x="650" y="52" width="222" height="80" rx="4"/>
+          </g>
+          <g text-anchor="middle">
+            <text x="108" y="79" font-size="14" font-weight="600">MIL graph</text>
+            <text x="108" y="105" font-size="12" fill="var(--fg-secondary)">parse · typed graph</text>
+            <text x="302" y="79" font-size="14" font-weight="600">Graph passes</text>
+            <text x="302" y="100" font-size="12" fill="var(--fg-secondary)">normalize</text>
+            <text x="302" y="117" font-size="12" fill="var(--fg-secondary)">decompose · fuse</text>
+            <text x="520" y="79" font-size="14" font-weight="600">H16G plan and partition</text>
+            <text x="520" y="100" font-size="12" fill="var(--fg-secondary)">legalize · tile</text>
+            <text x="520" y="117" font-size="12" fill="var(--fg-secondary)">lifetime · bridge state</text>
+            <text x="761" y="79" font-size="14" font-weight="600">Compose and write</text>
+            <text x="761" y="100" font-size="12" fill="var(--fg-secondary)">field folds · SRAM forms</text>
+            <text x="761" y="117" font-size="12" fill="var(--fg-secondary)">HWX objects · manifest</text>
+          </g>
+          <g stroke="var(--diagram-stroke)" marker-end="url(#compiler-arrow)">
+            <line x1="188" y1="92" x2="210" y2="92"/>
+            <line x1="390" y1="92" x2="412" y2="92"/>
+            <line x1="624" y1="92" x2="646" y2="92"/>
+          </g>
+          <text x="450" y="158" text-anchor="middle" font-size="12" fill="var(--fg-muted)">The planner groups tasks using operation type, geometry, data type, SRAM compatibility, and value lifetime.</text>
+
+          <rect x="28" y="180" width="844" height="322" rx="4" fill="var(--gold)" fill-opacity=".045" stroke="var(--gold)"/>
+          <text x="48" y="210" font-size="15" font-weight="600" fill="var(--gold)">S128/D128 FP16 attention after graph lowering</text>
+
+          <g>
+            <rect x="48" y="232" width="206" height="190" rx="4" fill="var(--blue)" fill-opacity=".07" stroke="var(--blue)"/>
+            <text x="66" y="261" font-size="14" font-weight="600" fill="var(--blue)">Program 0</text>
+            <text x="66" y="286" font-size="12" fill="var(--fg-secondary)">inputs: Q, K</text>
+            <rect x="66" y="305" width="170" height="54" rx="3" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/>
+            <text x="151" y="328" text-anchor="middle" font-size="14" font-weight="600">matmul</text>
+            <text x="151" y="348" text-anchor="middle" font-size="12" fill="var(--fg-secondary)">Q × transpose(K)</text>
+            <text x="151" y="386" text-anchor="middle" font-size="12" fill="var(--fg-secondary)">scale stored in the</text>
+            <text x="151" y="404" text-anchor="middle" font-size="12" fill="var(--fg-secondary)">matmul output field</text>
+          </g>
+
+          <g>
+            <rect x="324" y="222" width="340" height="210" rx="4" fill="var(--gold)" fill-opacity=".07" stroke="var(--gold)"/>
+            <text x="342" y="251" font-size="14" font-weight="600" fill="var(--gold)">Program 1 · row normalization</text>
+            <g fill="var(--diagram-fill)" stroke="var(--diagram-stroke)">
+              <rect x="342" y="270" width="88" height="42" rx="3"/>
+              <rect x="446" y="270" width="76" height="42" rx="3"/>
+              <rect x="538" y="270" width="62" height="42" rx="3"/>
+              <rect x="342" y="331" width="88" height="42" rx="3"/>
+              <rect x="446" y="331" width="88" height="42" rx="3"/>
+              <rect x="550" y="331" width="94" height="42" rx="3"/>
+            </g>
+            <g text-anchor="middle" font-size="12.5" font-weight="600">
+              <text x="386" y="296">reduce max</text>
+              <text x="484" y="296">subtract</text>
+              <text x="569" y="296">exp</text>
+              <text x="386" y="357">reduce sum</text>
+              <text x="490" y="357">reciprocal</text>
+              <text x="597" y="357">multiply</text>
+            </g>
+            <g fill="none" stroke="var(--green)" marker-end="url(#compiler-green-arrow)">
+              <line x1="430" y1="291" x2="442" y2="291"/>
+              <line x1="522" y1="291" x2="534" y2="291"/>
+              <path d="M600 291H620V322H386V327"/>
+              <line x1="430" y1="352" x2="442" y2="352"/>
+              <line x1="534" y1="352" x2="546" y2="352"/>
+            </g>
+            <text x="494" y="403" text-anchor="middle" font-size="12" fill="var(--green)">intermediate values remain in SRAM</text>
+          </g>
+
+          <g>
+            <rect x="756" y="232" width="96" height="190" rx="4" fill="var(--plum)" fill-opacity=".07" stroke="var(--plum)"/>
+            <text x="804" y="261" text-anchor="middle" font-size="14" font-weight="600" fill="var(--plum)">Program 2</text>
+            <text x="804" y="286" text-anchor="middle" font-size="12" fill="var(--fg-secondary)">input: V</text>
+            <rect x="766" y="305" width="76" height="54" rx="3" fill="var(--diagram-fill)" stroke="var(--diagram-stroke)"/>
+            <text x="804" y="328" text-anchor="middle" font-size="14" font-weight="600">matmul</text>
+            <text x="804" y="348" text-anchor="middle" font-size="12" fill="var(--fg-secondary)">P × V</text>
+            <text x="804" y="396" text-anchor="middle" font-size="12" fill="var(--fg-secondary)">output: Y</text>
+          </g>
+
+          <g fill="none" stroke="var(--blue)" stroke-dasharray="5 4" marker-end="url(#compiler-blue-arrow)">
+            <line x1="254" y1="327" x2="320" y2="327"/>
+            <line x1="664" y1="327" x2="752" y2="327"/>
+          </g>
+          <text x="287" y="311" text-anchor="middle" font-size="11" fill="var(--blue)">scaled</text>
+          <text x="708" y="311" text-anchor="middle" font-size="11" fill="var(--blue)">probabilities</text>
+
+          <g font-size="12" fill="var(--fg-muted)">
+            <line x1="50" y1="467" x2="84" y2="467" stroke="var(--green)" stroke-width="1.5"/>
+            <text x="94" y="472">inside one HWX program</text>
+            <line x1="310" y1="467" x2="344" y2="467" stroke="var(--blue)" stroke-width="1.5" stroke-dasharray="5 4"/>
+            <text x="354" y="472">IOSurface between programs</text>
+            <text x="850" y="472" text-anchor="end">three synchronous submissions</text>
+          </g>
+
+          <path d="M450 502V514H111V524" fill="none" stroke="var(--diagram-stroke)" marker-end="url(#compiler-arrow)"/>
+          <g fill="var(--diagram-fill)" stroke="var(--diagram-stroke)">
+            <rect x="34" y="528" width="154" height="82" rx="4"/>
+            <rect x="220" y="528" width="166" height="82" rx="4"/>
+            <rect x="418" y="528" width="116" height="82" rx="4"/>
+            <rect x="566" y="528" width="116" height="82" rx="4"/>
+            <rect x="714" y="528" width="152" height="82" rx="4"/>
+          </g>
+          <g text-anchor="middle">
+            <text x="111" y="558" font-size="13.5" font-weight="600">Program bundle</text>
+            <text x="111" y="583" font-size="12" fill="var(--fg-secondary)">3 HWX + manifest</text>
+            <text x="303" y="558" font-size="13.5" font-weight="600">Provisioned runtime</text>
+            <text x="303" y="583" font-size="12" fill="var(--fg-secondary)">surfaces · dispatch</text>
+            <text x="476" y="558" font-size="13.5" font-weight="600">aned cache</text>
+            <text x="476" y="583" font-size="12" fill="var(--fg-secondary)">load programs</text>
+            <text x="624" y="558" font-size="13.5" font-weight="600">M4 ANE</text>
+            <text x="624" y="583" font-size="12" fill="var(--fg-secondary)">evaluate</text>
+            <text x="790" y="558" font-size="13.5" font-weight="600">CPU comparison</text>
+            <text x="790" y="583" font-size="12" fill="var(--fg-secondary)">accuracy · timing</text>
+          </g>
+          <g stroke="var(--diagram-stroke)" marker-end="url(#compiler-arrow)">
+            <line x1="188" y1="569" x2="216" y2="569"/>
+            <line x1="386" y1="569" x2="414" y2="569"/>
+            <line x1="534" y1="569" x2="562" y2="569"/>
+          </g>
+          <line x1="682" y1="569" x2="710" y2="569" stroke="var(--green)" marker-end="url(#compiler-green-arrow)"/>
+
+          <text x="450" y="652" text-anchor="middle" font-size="12.5" fill="var(--fg-secondary)">The same planner also handles scalar folds, matmul-GELU, affine scan, and the 58-program Chunked DeltaNet graph.</text>
+          <text x="450" y="674" text-anchor="middle" font-size="12" fill="var(--fg-muted)">Unsupported operations, geometries, data types, and bridge combinations stop before object emission.</text>
+        </svg>
+      </div>
+      <figcaption>S128/D128 FP16 attention compiled into three HWX programs connected by IOSurfaces.</figcaption>
+    </figure>
+
+    <h3>Supported operations</h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Family</th><th>Measured H16G coverage</th></tr></thead>
+        <tbody>
+          <tr><td>Conv1x1</td><td>16 FP16 channel and spatial geometries, with optional ReLU</td></tr>
+          <tr><td>Regular convolution</td><td>C64 and C128, S32 and S64, K3 and K5</td></tr>
+          <tr><td>Depthwise convolution</td><td>C64, C128, C256, and C512 at S64 and K3</td></tr>
+          <tr><td>Matmul</td><td>Square N128, N256, and N512; tiled multiples of 128 through N4096</td></tr>
+          <tr><td>Binary ALU</td><td>Add at N128 through N2048; multiply at N128 and N512; max and min at N512</td></tr>
+          <tr><td>Unary and LUT</td><td>ReLU, sigmoid, tanh, GELU, SiLU, exp, log, sqrt, rsqrt, and reciprocal</td></tr>
+          <tr><td>Reduction</td><td>Sum, mean, and max over measured channel, height, and width axes</td></tr>
+          <tr><td>Layout</td><td>S2D and D2S at B4 and B8, including 64-byte physical row padding</td></tr>
+          <tr><td>Fused layout</td><td>S2D, Conv1x1, and D2S at C8, C16, C24, and C32</td></tr>
+          <tr><td>W8A8</td><td>Four-layer C64/S64 Conv1x1 chain with packed middle blocks</td></tr>
+          <tr><td>Multi-operation graphs</td><td>Attention, matmul-GELU, affine scan, and Chunked DeltaNet at the measured shapes below</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="measure">
+      <p>Compiler coverage is limited to the configurations in the table above. For convolution, matmul, ALU, and layout operations, the encoders calculate Task Descriptor fields from the graph and selected schedule. Some unary and reduction encoders use a simpler approach: they copy Task Descriptor words measured for one specific geometry. Anything outside the recorded configurations is rejected before HWX emission.</p>
+    </div>
+
+    <h3>Results for multi-operation graphs</h3>
+
+    <div class="measure">
+      <p>The table reports the final M4 runs on a Mac16,10 with macOS 26.3 build 25D125. The attention comparison used 50 warmups and five alternating batches of 5,000 synchronous evaluations for each compiler. The matmul-GELU figures come from the earlier two-run comparison.</p>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Graph</th><th>HWX programs</th><th>Numerical result</th><th>Research latency</th><th>Apple compiler</th></tr></thead>
+        <tbody>
+          <tr><td>FA2, FP16, S128/D128</td><td>3</td><td>16,384 values; zero mismatches; maximum error <code>0</code></td><td><code>369.458 us</code></td><td><code>127.208 us</code></td></tr>
+          <tr><td>Matmul, reshape, GELU, N256</td><td>1</td><td>maximum error <code>0.00610352</code></td><td><code>66.94 us</code></td><td><code>76.60 us</code></td></tr>
+          <tr><td>Four-step FP16 affine scan, N128</td><td>8</td><td>every stage within 1 FP16 ULP; final output within 3 ULP</td><td>not measured</td><td><code>InvalidMILProgram</code></td></tr>
+          <tr><td>Chunked DeltaNet, C128/D128</td><td>58</td><td>output relative L2 <code>0.004214</code>; final-state relative L2 <code>0.004443</code></td><td><code>22728.792 us</code></td><td><code>InvalidMILProgram</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="measure">
+      <p>FA2 runs as three HWX programs. Program 0 computes <code>Q × transpose(K)</code>, with the scale stored in the matmul output field. Program 1 performs the softmax normalization: <code>reduce_max</code>, subtract, exp, <code>reduce_sum</code>, reciprocal, and multiply. These six tasks share one program because their intermediate values can stay in SRAM. Program 2 multiplies the probabilities by V.</p>
+
+      <p>At S128/D128, the complete chain takes 369.458 microseconds, about 3x the Apple compiler's 127.208 microseconds. Matmul-GELU composes into a single program and takes 66.94 microseconds, compared with 76.60 for the Apple compiler.</p>
+
+      <p>The 58-program Chunked DeltaNet graph measured 22.73 milliseconds. Its MIL uses ordinary operations (matmul, add, multiply, exp) with regular inputs (normalized Q and K tensors, transposed K layout, triangular matrices). There is no dedicated DeltaNet operation.</p>
+    </div>
+
+    <div class="key">
+      <b>Hardware activity</b>
+      <span>The research-only FA2 capture reported ANE activity in 61 of 140 samples, with a 601.9 mW active-sample mean and a 681 mW peak. Matmul-GELU was active in 8 of 60 samples at 36 to 134 mW. Chunked DeltaNet was active in 73 of 80 samples at 19 to 403 mW and 86.34 mW on average. The GPU rail stayed at 0 mW in the matmul-GELU and Chunked DeltaNet captures. These system-wide samples confirm ANE execution; they do not provide per-process energy measurements.</span>
+    </div>
+
+    <h3>Physical tensor layout</h3>
+
+    <div class="measure">
+      <p>Logical rows shorter than 64 bytes are padded to a 64-byte physical row in their tensor records. All higher-level sizes (plane, batch, allocation) derive from that physical stride. For example, a C32/S64/B4 space-to-depth object has a 32-byte logical output row but a 64-byte physical row. Apple's compiler produces the same layout.</p>
+
+      <p>The graph keeps the semantic shape. Memory planning assigns the physical strides and storage sizes. The HWX writer records both views, and the runtime fills and reads IOSurfaces through the physical strides. After adding this rule, all 24 reduction forms and all 25 standalone or fused layout forms passed twice on the M4.</p>
+    </div>
+
+    <div class="key">
+      <b>Current boundary</b>
+      <span>Coverage is limited to the configurations measured on the M4, and the compiler rejects every other case before HWX emission. The three-program attention path still crosses two IOSurface boundaries. The 58-program Chunked DeltaNet path spends most of its time on synchronous submissions. Broader operation and geometry coverage, dynamic shapes, general legality rules, and cost-based scheduling remain open work.</span>
+    </div>
+  </section>
+
+  <section class="chapter gold" id="open-questions">
+    <h2 data-kicker="10 · Boundaries">Unmapped parts of the compiler</h2>
+
+    <div class="measure">
+      <p>Four areas of Apple's compiler remain unmapped: post-lowering machine patterns, one GOC reassignment branch, the scheduling cost function, and whole-graph inspection.</p>
+
+      <h3>Post-lowering machine patterns</h3>
+      <p>The narrow <code>NEConv</code> pattern checks layout and DMA-symbol state beyond its <code>neconv → negoc</code> shape. Its constructor and predicates are mapped, but none of the tested graphs satisfied every condition. <code>TdBranching</code> has a known <code>ane_layer → condition_layer</code> shape; the MIL form that creates its condition object has not been identified.</p>
+
+      <h3>GOC reassignment</h3>
+      <p>The reassignment pass creates constant scale-and-bias data and inserts a <code>ZinNEBypassLayer</code> for eligible PE elementwise work. One branch of the pass expects a predecessor with opcode <code>0x32</code>. That layer class did not appear in any of the constructor traces, so this branch remains unnamed.</p>
+
+      <h3>Scheduling policy</h3>
+      <p>The live trace fixes the order of backend passes (scheduling, allocation, spilling, hazards, and so on). What remains unknown is the cost function: the thresholds that choose among legal splits. Answering that requires controlled graph families that vary one pressure term at a time.</p>
+
+      <h3>Whole-graph inspection</h3>
+      <p>The release <code>DebugPrint</code> path produces no layer text. A general live viewer would have to walk <code>ZinIrControlFlowGraph::TraverseForward</code> and recover identity from object methods. The targeted callbacks already do this for individual passes and pattern commits.</p>
+    </div>
+  </section>
+
+  <hr>
+
+  <div class="measure">
+    <p>The traced compiler path begins with a MIL graph, passes through Zin IR and Zin MIR, and ends in a scheduled HWX program. The research compiler applies the recovered HWX rules to a measured set of operations and shapes, including a three-program FP16 attention graph whose softmax intermediates remain in SRAM. The unmapped passes and scheduling rules in Section 10 define the remaining work.</p>
+  </div>
+
+  <hr>
+
+  <h2 class="plain">References</h2>
+
+  <ol class="ref-list">
+      <li>Manjeet Singh. <em>Inside the M4 Apple Neural Engine</em>, Parts 1–4. <a href="https://maderix.github.io/articles/">maderix.github.io/articles</a>, 2026.</li>
+      <li>Spencer H. Bryngelson. <em>Apple Neural Engine: Architecture, Programming, and Performance.</em> arXiv:2606.22283, June 2026. <a href="https://arxiv.org/abs/2606.22283">arxiv.org/abs/2606.22283</a>.</li>
+      <li>Ramchand Kumaresan. <em>Orion: Characterizing and Programming Apple's Neural Engine for LLM Training and Inference.</em> arXiv:2603.06728, March 2026. <a href="https://arxiv.org/abs/2603.06728">arxiv.org/abs/2603.06728</a>.</li>
+    </ol>
+</article>
+
+
+<script>
+(function () {
+  var root = document.documentElement;
+  var button = document.getElementById("theme-toggle");
+  function setTheme(theme) {
+    root.setAttribute("data-theme", theme);
+    button.textContent = theme === "dark" ? "light" : "dark";
+    button.setAttribute("aria-label", theme === "dark" ? "Toggle light mode" : "Toggle dark mode");
+    try { localStorage.setItem("theme", theme); } catch (error) {}
+  }
+  var savedTheme = "light";
+  try { savedTheme = localStorage.getItem("theme") || "light"; } catch (error) {}
+  setTheme(savedTheme);
+  button.addEventListener("click", function () {
+    setTheme(root.getAttribute("data-theme") === "dark" ? "light" : "dark");
+  });
+
+  // ---- stage strip detail panel ----
+  // [name, phase, role, firmness]. firmness: 'traced' = behavior confirmed by
+  // disassembly or a live-object trace in this article; 'named' = role read
+  // from the function name and its neighbors in the trace.
+  var stages = [
+    ["CompileProcedure", "Import", "Entry point for one MIL function (a procedure). Every stage below runs inside this call.", "traced"],
+    ["BuildLayerGraph", "Import", "Imports the parsed MIL program into a Zin layer graph. The first Zin function reached under LLDB; MIL.framework's work ends here.", "traced"],
+    ["PreProcessControlFlowGraph", "Import", "Prepares the control-flow graph built from the layer graph before it is validated.", "named"],
+    ["ValidateControlFlowGraph", "Import", "Checks the imported graph against structural rules before any optimization runs.", "named"],
+    ["OptimizeControlFlowGraph", "Optimize", "Zin IR optimization: constant pre-calculation, dead-code elimination, recognition of variance and normalization forms, matmul-to-convolution rewriting, broadcast and transpose collapse, Q/DQ folding (section 03).", "traced"],
+    ["RunMirPrepareIr", "Optimize", "Prepares the graph for machine lowering. Calls ZinMirPrepareLayers, which runs the broad fusion round, engine lowering, and the narrow fusion round (section 04).", "traced"],
+    ["RunFindInherentParallelism", "Optimize", "Finds independent work in the graph for partitioning. The partition count, edge cut, and parallel score in init.json and refine.json come from this analysis.", "named"],
+    ["RunMirBuilder", "Plan", "Builds and optimizes MIR: active-NE selection, engine reassignment, double-int8 eligibility, large-kernel mode, the DRAM, L2, latency, context-switch and multi-segment legalizers, and final ANE assignment (section 05).", "traced"],
+    ["RunTaskScheduler", "Plan", "Fixes the execution order of hardware tasks and closes partitions.", "named"],
+    ["ValidateMirInfo", "Plan", "Validates MIR state after scheduling.", "named"],
+    ["RunCPAllocator", "Plan", "Constraint-programming allocation of resources to live ranges. Serial graphs stay on the internal solver; a graph with two independent branches loaded libORTools.dylib here.", "traced"],
+    ["MirPrepareControlFlow", "Plan", "Prepares control flow after allocation has changed the graph.", "named"],
+    ["ValidateMirInfo", "Plan", "Second validation, after allocation.", "named"],
+    ["RunRegisterSpilling", "Resolve", "Spills register state that does not fit.", "named"],
+    ["RunMultiSegmentSpilling", "Resolve", "Spills across hardware segments when one segment cannot hold the working set.", "named"],
+    ["RunHazardAnalysis", "Resolve", "Derives hazards between tasks. The explicit wait records in the Task Descriptor stream come from this pass.", "named"],
+    ["RunRemoteDependencyAnalysis", "Resolve", "Derives cross-unit dependencies and their ordering.", "named"],
+    ["RunPieceGeneration", "Resolve", "Cuts the scheduled work into the streamed pieces the hardware executes.", "named"],
+    ["RunMemCacheAllocation", "Resolve", "Assigns memory-cache resources to the pieces.", "named"],
+    ["UpdateFinalKernelSHA", "Materialize", "Finalizes the identity hash of the kernel (weight) data.", "named"],
+    ["SetBinaryPoint", "Materialize", "Sets fixed-point metadata for layers that use it.", "named"],
+    ["SetSplitRowCompute", "Materialize", "Encodes the split-row execution choice into descriptor state.", "named"],
+    ["DumpDebugProfilingInfo", "Materialize", "Emits profiling metadata when debug options ask for it.", "named"],
+    ["SetTDExecutionTime", "Materialize", "Attaches a timing estimate to each Task Descriptor.", "named"],
+    ["RunCachePrefetch", "Materialize", "Inserts and configures cache prefetch for upcoming tasks.", "named"],
+    ["RunContextSwitch", "Materialize", "Establishes context-switch behavior between tasks.", "named"],
+    ["RunKernelBufferControl", "Materialize", "Configures kernel-buffer operation for weight streaming.", "named"],
+    ["RunComputeAddressTranslationRegisters", "Materialize", "Computes the address-translation register values written into the descriptors.", "named"],
+    ["BuildComputeProgram", "Emit", "Assembles the register-write stream that becomes __TEXT.__text.", "traced"],
+    ["QualifyOnImbalanceRatio", "Emit", "Checks partition imbalance across engines.", "named"],
+    ["DumpLayerStats", "Emit", "Produces per-layer statistics when requested.", "named"],
+    ["RunHandleMultiAneSynchronization", "Emit", "Adds synchronization between neural engines when work is split across them.", "named"],
+    ["RunCodeGenObjectGen", "Emit", "Writes the HWX Mach-O object: header, load commands, segments, symbols, and payloads.", "traced"],
+    ["SetLiveIOAttributes", "Emit", "Reports the live input and output layout (dimensions, type, interleave, strides). This is the LiveInputList / LiveOutputList in the status plist.", "traced"]
+  ];
+  var strip = document.getElementById("stage-strip");
+  if (strip) {
+    var rects = strip.querySelectorAll(".stg");
+    function showStage(i) {
+      var s = stages[i];
+      rects.forEach(function (r, k) { r.classList.toggle("on", k === i); });
+      document.getElementById("sd-num").textContent = "stage " + (i + 1) + " of 34";
+      document.getElementById("sd-name").textContent = s[0];
+      document.getElementById("sd-phase").textContent = s[1];
+      document.getElementById("sd-role").textContent = s[3] === "traced" ? "role confirmed by disassembly or live trace" : "role read from the name and its neighbors";
+      document.getElementById("sd-copy").textContent = s[2];
+    }
+    rects.forEach(function (r, i) {
+      r.addEventListener("mouseenter", function () { showStage(i); });
+      r.addEventListener("focus", function () { showStage(i); });
+      r.addEventListener("click", function () { showStage(i); });
+      r.addEventListener("keydown", function (e) {
+        if (e.key === "ArrowRight" && i < rects.length - 1) { rects[i + 1].focus(); e.preventDefault(); }
+        if (e.key === "ArrowLeft" && i > 0) { rects[i - 1].focus(); e.preventDefault(); }
+      });
+    });
+    showStage(0);
+  }
+
+  // ---- hover panels for the landscape map and the backend figure ----
+  // Elements with data-stages="a-b" list the controller functions from the
+  // stages array that fired in that span; elements with only data-title show
+  // their title and keep the default note.
+  function wirePanel(rootId, ids, defaults) {
+    var root = document.getElementById(rootId);
+    if (!root) return;
+    var items = root.querySelectorAll("[data-title]");
+    var title = document.getElementById(ids[0]), range = document.getElementById(ids[1]),
+        fns = document.getElementById(ids[2]), copy = document.getElementById(ids[3]);
+    function reset() {
+      items.forEach(function (el) { el.classList.remove("on"); });
+      title.textContent = defaults[0]; range.textContent = ""; fns.innerHTML = ""; copy.textContent = defaults[1];
+    }
+    function show(el) {
+      items.forEach(function (x) { x.classList.toggle("on", x === el); });
+      title.textContent = el.getAttribute("data-title");
+      var st = el.getAttribute("data-stages");
+      fns.innerHTML = "";
+      if (!st) { range.textContent = "beside the traced path"; copy.textContent = defaults[1]; return; }
+      var parts = st.split("-"), a = +parts[0], b = +(parts[1] || parts[0]);
+      range.textContent = a === b ? "stage " + a : "stages " + a + "–" + b;
+      var summary = a === b ? stages[a - 1][2] : (b - a + 1) + " controller functions fired in this span, in this order. Hover a name for its role.";
+      for (var i = a; i <= b; i++) {
+        var c = document.createElement("code"); c.textContent = i + " " + stages[i - 1][0]; c.tabIndex = 0;
+        (function (k) {
+          c.addEventListener("mouseenter", function () { copy.textContent = k + " · " + stages[k - 1][2]; });
+          c.addEventListener("focus", function () { copy.textContent = k + " · " + stages[k - 1][2]; });
+          c.addEventListener("mouseleave", function () { copy.textContent = summary; });
+        })(i);
+        fns.appendChild(c);
+      }
+      copy.textContent = summary;
+    }
+    items.forEach(function (el) {
+      el.addEventListener("mouseenter", function () { show(el); });
+      el.addEventListener("focus", function () { show(el); });
+      el.addEventListener("click", function () { show(el); });
+    });
+    root.addEventListener("mouseleave", reset);
+    reset();
+  }
+  wirePanel("compiler-map", ["md-title", "md-range", "md-fns", "md-copy"],
+    ["Hover a box to see which controller functions run there",
+     "Solid boxes are the traced MIL path. Dashed boxes exist in the binary beside it. Stage numbers count the 34 controller functions that fired for one convolution compile (§02)."]);
+  var bf = document.getElementById("backend-detail");
+  if (bf) {
+    var bfig = bf.parentNode; bfig.id = bfig.id || "backend-figure";
+    wirePanel(bfig.id, ["bd-title", "bd-range", "bd-fns", "bd-copy"],
+      ["Hover a box to see the controller functions behind it",
+       "Each box groups the trace stages named inside it. Ranges list every controller that fired in that span, in order."]);
+  }
+
+  // Re-apply deep links after web fonts settle so section screenshots and
+  // normal shared anchors land on the requested chapter instead of its
+  // pre-font layout position.
+  window.addEventListener("load", function () {
+    if (!location.hash) return;
+    window.setTimeout(function () {
+      var target = document.querySelector(location.hash);
+      if (target) target.scrollIntoView({behavior: "instant", block: "start"});
+    }, 350);
+  });
+})();
+</script>
+</body>
+</html>
