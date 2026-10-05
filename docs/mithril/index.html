@@ -467,7 +467,7 @@ a = array_set(a, i, v)</code></pre></div>
 <p>Nothing here names a thread. Each <code>first_ray(i, cams, tab)</code> reads only the camera table, the colour table and its own <code>i</code>, so Mithril may compute the pixels in any order, on any core or on the GPU. The writes into <code>base</code> form a chain, but each is a single store; the cost lives in <code>first_ray</code>. The device and the thread count are chosen when the program runs.</p>
 
 <h3>The whole system</h3>
-<p>The map below follows one program from its source file to running code, top to bottom. Each box names the crate that implements it and the chapter that explains it. The dashed boxes beside the main path are the checks: the reference interpreter every run is compared with, the two Lean proofs, and the test gates. Notice that the rule table appears only once, in compile-time reduction; both runtimes fire that same table.</p>
+<p>The map below follows one program from its source file to running code, top to bottom. Each box names the crate that implements it, and the § mark gives the chapter that explains it. The dashed boxes beside the main path are the checks: the reference interpreter every run is compared with, the two Lean proofs, model checking of the CPU's lock-free handoffs, and the test gates. The copper dashed box is the command that shows what the compiler did to your program. Notice that the rule table appears only once, inside compile-time reduction, and a dotted line carries it to both runtimes: the compiler, the CPU and the GPU all fire the same rules.</p>
 <figure class="diagram map" id="map"><svg viewBox="0 0 960 884" role="img" aria-labelledby="map-title map-desc">
 <title id="map-title">Mithril, end to end</title>
 <desc id="map-desc">A program passes from the Python-subset source through mithril-front (parse, types, desugar to Core), mithril-reassoc (folds proved associative, loops split into task trees), mithril-net (compile-time reduction with the interaction rule table, leaving the residual program), mithril-codegen (native code, dives, rule segments, range launches and net regions), the Rust and CUDA printers, and the two runtimes: mithril-rt on CPU workers and engine.cu in one cooperative GPU kernel. Both runtimes fire the same rule table in their net regions and return the same value. Beside the main path: the reference interpreter, the Lean fold checker, the Lean confluence proof and the gates that compare every lane with the interpreter.</desc>
@@ -512,11 +512,11 @@ a = array_set(a, i, v)</code></pre></div>
 <path d="M354.0 194.0H361.0" fill="none" stroke="var(--ink-3)" stroke-width="1.4" marker-end="url(#map-arrow)"/>
 <rect x="362.0" y="176" width="152.0" height="36" rx="4" fill="var(--bg)" stroke="var(--hair-2)" stroke-width="1"/>
 <text x="438.0" y="191.0" style="font-size:11.5px" fill="var(--ink)" text-anchor="middle">split loops</text>
-<text x="438.0" y="206.0" style="font-size:10px" fill="var(--ink-3)" text-anchor="middle">tree · call · apply</text>
+<text x="438.0" y="206.0" style="font-size:10px" fill="var(--ink-3)" text-anchor="middle">into a tree of calls</text>
 <path d="M514.0 194.0H521.0" fill="none" stroke="var(--ink-3)" stroke-width="1.4" marker-end="url(#map-arrow)"/>
 <rect x="522.0" y="176" width="152.0" height="36" rx="4" fill="var(--bg)" stroke="var(--hair-2)" stroke-width="1"/>
 <text x="598.0" y="191.0" style="font-size:11.5px" fill="var(--ink)" text-anchor="middle">index fills</text>
-<text x="598.0" y="206.0" style="font-size:10px" fill="var(--ink-3)" text-anchor="middle">one flat range</text>
+<text x="598.0" y="206.0" style="font-size:10px" fill="var(--ink-3)" text-anchor="middle">one flat index range</text>
 <rect x="708" y="140" width="224" height="84" rx="6" fill="none" stroke="var(--good)" stroke-width="1" stroke-dasharray="4 4"/>
 <text x="720" y="160" style="font-size:12.5px" fill="var(--good)" font-weight="600">Lean 4 fold checker</text>
 <text x="720" y="178" style="font-size:10.5px" fill="var(--ink-2)">mithril prove f.py</text>
@@ -526,9 +526,9 @@ a = array_set(a, i, v)</code></pre></div>
 <path d="M688 194H706" fill="none" stroke="var(--good)" stroke-width="1.4" stroke-dasharray="3 3" marker-end="url(#map-good)"/>
 <path d="M358 224V242" fill="none" stroke="var(--accent)" stroke-width="2" marker-end="url(#map-hot)"/>
 <rect x="28" y="244" width="660" height="160" rx="6" fill="var(--accent)" fill-opacity=".06" stroke="var(--accent)" stroke-width="1.5"/>
-<text x="42" y="266" style="font-size:14px" fill="var(--accent)" font-weight="600">Compile-time reduction · the optimizer is the rules</text>
+<text x="42" y="266" style="font-size:14px" fill="var(--accent)" font-weight="600">Compile-time reduction · the rules do the optimizing</text>
 <text x="676" y="266" style="font-size:10.5px" fill="var(--ink-3)" text-anchor="end">mithril-net · §4</text>
-<text x="42" y="286" style="font-size:11px" fill="var(--ink-2)">Core becomes a net; every rule whose inputs are written in the source fires, under a budget</text>
+<text x="42" y="286" style="font-size:11px" fill="var(--ink-2)">Core becomes a net; every rule whose inputs are already known fires, up to a work budget</text>
 <rect x="42" y="298" width="632" height="56" rx="5" fill="var(--bg)" stroke="var(--accent)" stroke-width="1"/>
 <text x="54" y="316" style="font-size:11.5px" fill="var(--accent)" font-weight="600">the rule table · mithril-core</text>
 <rect x="54.0" y="324" width="70.8" height="22" rx="3" fill="var(--card)" stroke="var(--hair-2)" stroke-width="1"/>
@@ -551,16 +551,16 @@ a = array_set(a, i, v)</code></pre></div>
 <text x="144.7" y="382.0" style="font-size:11.5px" fill="var(--ink)" text-anchor="middle">fold · select · inline</text>
 <path d="M247.3 378.0H254.3" fill="none" stroke="var(--ink-3)" stroke-width="1.4" marker-end="url(#map-arrow)"/>
 <rect x="255.3" y="362" width="205.3" height="32" rx="4" fill="var(--bg)" stroke="var(--hair-2)" stroke-width="1"/>
-<text x="358.0" y="382.0" style="font-size:11.5px" fill="var(--ink)" text-anchor="middle">known-argument clones</text>
+<text x="358.0" y="382.0" style="font-size:11.5px" fill="var(--ink)" text-anchor="middle">specialized copies</text>
 <path d="M460.7 378.0H467.7" fill="none" stroke="var(--ink-3)" stroke-width="1.4" marker-end="url(#map-arrow)"/>
 <rect x="468.7" y="362" width="205.3" height="32" rx="4" fill="var(--accent)" fill-opacity=".12" stroke="var(--accent)" stroke-width="1.4"/>
 <text x="571.3" y="382.0" style="font-size:11.5px" fill="var(--ink)" font-weight="600" text-anchor="middle">residual Core</text>
 <rect x="708" y="274" width="224" height="100" rx="6" fill="none" stroke="var(--good)" stroke-width="1" stroke-dasharray="4 4"/>
 <text x="720" y="294" style="font-size:12.5px" fill="var(--good)" font-weight="600">Confluence proof</text>
 <text x="720" y="312" style="font-size:10.5px" fill="var(--ink-2)">Lean 4 · proofs/confluence</text>
-<text x="720" y="327" style="font-size:10.5px" fill="var(--ink-2)">any order of firings that</text>
-<text x="720" y="342" style="font-size:10.5px" fill="var(--ink-2)">finishes reaches one net,</text>
-<text x="720" y="357" style="font-size:10.5px" fill="var(--ink-2)">budget cut-offs included</text>
+<text x="720" y="327" style="font-size:10.5px" fill="var(--ink-2)">every order of firings that</text>
+<text x="720" y="342" style="font-size:10.5px" fill="var(--ink-2)">finishes ends at the same net,</text>
+<text x="720" y="357" style="font-size:10.5px" fill="var(--ink-2)">even one cut short by the budget</text>
 <text x="922" y="294" style="font-size:10.5px" fill="var(--ink-3)" text-anchor="end">§3 · §8</text>
 <path d="M674 326H706" fill="none" stroke="var(--good)" stroke-width="1.4" stroke-dasharray="3 3" marker-end="url(#map-good)"/>
 <path d="M358 404V422" fill="none" stroke="var(--accent)" stroke-width="2" marker-end="url(#map-hot)"/>
@@ -569,23 +569,23 @@ a = array_set(a, i, v)</code></pre></div>
 <text x="676" y="446" style="font-size:10.5px" fill="var(--ink-3)" text-anchor="end">mithril-codegen · §4</text>
 <rect x="42.0" y="462" width="120.0" height="40" rx="4" fill="var(--bg)" stroke="var(--hair-2)" stroke-width="1"/>
 <text x="102.0" y="479" style="font-size:11.5px" fill="var(--ink)" text-anchor="middle">native</text>
-<text x="102.0" y="494" style="font-size:10px" fill="var(--ink-3)" text-anchor="middle">never pauses</text>
+<text x="102.0" y="494" style="font-size:10px" fill="var(--ink-3)" text-anchor="middle">runs to the end</text>
 <rect x="170.0" y="462" width="120.0" height="40" rx="4" fill="var(--bg)" stroke="var(--hair-2)" stroke-width="1"/>
 <text x="230.0" y="479" style="font-size:11.5px" fill="var(--ink)" text-anchor="middle">dive</text>
-<text x="230.0" y="494" style="font-size:10px" fill="var(--ink-3)" text-anchor="middle">pauses on budget</text>
+<text x="230.0" y="494" style="font-size:10px" fill="var(--ink-3)" text-anchor="middle">can pause midway</text>
 <rect x="298.0" y="462" width="120.0" height="40" rx="4" fill="var(--bg)" stroke="var(--hair-2)" stroke-width="1"/>
 <text x="358.0" y="479" style="font-size:11.5px" fill="var(--ink)" text-anchor="middle">rule segments</text>
 <text x="358.0" y="494" style="font-size:10px" fill="var(--ink-3)" text-anchor="middle">resume after a pause</text>
 <rect x="426.0" y="462" width="120.0" height="40" rx="4" fill="var(--bg)" stroke="var(--hair-2)" stroke-width="1"/>
 <text x="486.0" y="479" style="font-size:11.5px" fill="var(--ink)" text-anchor="middle">range launches</text>
-<text x="486.0" y="494" style="font-size:10px" fill="var(--ink-3)" text-anchor="middle">fills · folds</text>
+<text x="486.0" y="494" style="font-size:10px" fill="var(--ink-3)" text-anchor="middle">fills and folds</text>
 <rect x="554.0" y="462" width="120.0" height="40" rx="4" fill="var(--bg)" stroke="var(--alt)" stroke-width="1"/>
 <text x="614.0" y="479" style="font-size:11.5px" fill="var(--ink)" text-anchor="middle">net region</text>
-<text x="614.0" y="494" style="font-size:10px" fill="var(--ink-3)" text-anchor="middle">closures · pending</text>
+<text x="614.0" y="494" style="font-size:10px" fill="var(--ink-3)" text-anchor="middle">shared and pending</text>
 <rect x="708" y="424" width="224" height="92" rx="6" fill="none" stroke="var(--alt)" stroke-width="1" stroke-dasharray="4 4"/>
 <text x="720" y="444" style="font-size:12.5px" fill="var(--alt)" font-weight="600">What the compiler did</text>
 <text x="720" y="462" style="font-size:10.5px" fill="var(--ink-2)">mithril net f.py</text>
-<text x="720" y="477" style="font-size:10.5px" fill="var(--ink-2)">firings and residual size</text>
+<text x="720" y="477" style="font-size:10.5px" fill="var(--ink-2)">rule firings and what is left,</text>
 <text x="720" y="492" style="font-size:10.5px" fill="var(--ink-2)">per function</text>
 <text x="922" y="444" style="font-size:10.5px" fill="var(--ink-3)" text-anchor="end">§4</text>
 <path d="M688 482H706" fill="none" stroke="var(--alt)" stroke-width="1.4" stroke-dasharray="3 3" marker-end="url(#map-alt)"/>
@@ -609,7 +609,7 @@ a = array_set(a, i, v)</code></pre></div>
 <text x="50" y="688" style="font-size:11.5px" fill="var(--ink)">tasks · records · joins</text>
 <text x="326" y="688" style="font-size:10px" fill="var(--ink-3)" text-anchor="end">lock-free handoffs</text>
 <rect x="40" y="704" width="296" height="28" rx="4" fill="var(--card)" stroke="var(--hair)" stroke-width="1"/>
-<text x="50" y="722" style="font-size:11.5px" fill="var(--ink)">dives under a budget</text>
+<text x="50" y="722" style="font-size:11.5px" fill="var(--ink)">budgeted native code</text>
 <text x="326" y="722" style="font-size:10px" fill="var(--ink-3)" text-anchor="end">pause → tasks</text>
 <rect x="40" y="738" width="296" height="28" rx="4" fill="var(--accent)" fill-opacity=".10" stroke="var(--accent)" stroke-width="1"/>
 <text x="50" y="756" style="font-size:11.5px" fill="var(--ink)" font-weight="600">net region</text>
@@ -624,7 +624,7 @@ a = array_set(a, i, v)</code></pre></div>
 <text x="390" y="688" style="font-size:11.5px" fill="var(--ink)">grow · work · native · range</text>
 <text x="666" y="688" style="font-size:10px" fill="var(--ink-3)" text-anchor="end">phases</text>
 <rect x="380" y="704" width="296" height="28" rx="4" fill="var(--card)" stroke="var(--hair)" stroke-width="1"/>
-<text x="390" y="722" style="font-size:11.5px" fill="var(--ink)">records · dives · frames</text>
+<text x="390" y="722" style="font-size:11.5px" fill="var(--ink)">same tasks and records</text>
 <text x="666" y="722" style="font-size:10px" fill="var(--ink-3)" text-anchor="end">same model</text>
 <rect x="380" y="738" width="296" height="28" rx="4" fill="var(--accent)" fill-opacity=".10" stroke="var(--accent)" stroke-width="1"/>
 <text x="390" y="756" style="font-size:11.5px" fill="var(--ink)" font-weight="600">net region</text>
